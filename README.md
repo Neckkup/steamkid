@@ -102,10 +102,15 @@ they are never committed and never pasted into an issue comment.
 | --- | --- | --- |
 | Vercel | deploys, preview URLs, rollback | _pending account connection_ |
 | Langfuse | AI traces, prompts, evals | _pending self-host deploy_ |
-| Sentry | web app errors | _pending account connection_ |
+| Sentry | web app errors | https://project-qq.sentry.io/projects/steamkid/ |
 
 Update this table the moment an account exists. The team references these URLs
 instead of asking each other where things live.
+
+Sentry slugs, for `SENTRY_ORG` / `SENTRY_PROJECT`: org `project-qq`, project
+`steamkid`. These are identifiers, not credentials. The DSN and the build-time
+auth token live in the Paperclip vault (`steamkid/sentry/*`) and are injected
+into the deploy environment — never committed here.
 
 ## Layout
 
