@@ -12,6 +12,8 @@ describe("scrubText", () => {
   it("removes phone numbers and Thai national ids", () => {
     expect(scrubText("call 081-234-5678")).toBe(`call ${REDACTED}`);
     expect(scrubText("id 1-2345-67890-12-3")).toBe(`id ${REDACTED}`);
+    expect(scrubText("id 1 2345 67890 12 3")).toBe(`id ${REDACTED}`);
+    expect(scrubText("id 1234567890123")).toBe(`id ${REDACTED}`);
   });
 
   it("removes credentials embedded in a URL", () => {
@@ -24,6 +26,34 @@ describe("scrubText", () => {
     expect(scrubText("the answer is 42 because water boils at 100C")).toBe(
       "the answer is 42 because water boils at 100C",
     );
+  });
+
+  it("removes phone numbers in the other shapes children's parents write them", () => {
+    expect(scrubText("call +66 81 234 5678")).toBe(`call ${REDACTED}`);
+    expect(scrubText("call +6681234567")).toBe(`call ${REDACTED}`);
+    expect(scrubText("call (02) 123-4567")).toBe(`call ${REDACTED}`);
+    expect(scrubText("call 081 234 5678")).toBe(`call ${REDACTED}`);
+    expect(scrubText("call 0812345678")).toBe(`call ${REDACTED}`);
+  });
+
+  // PRO-23: the phone regex used to eat digit runs separated by spaces, which is
+  // exactly what a child's maths answer looks like. A grading trace we cannot
+  // read is worse than useless.
+  it("leaves a child's maths work intact", () => {
+    const answers = [
+      "2 + 2 = 4",
+      "1 2 3 4 5 6 7 8 9",
+      "I counted 100 200 300 400 500 marbles",
+      "10 20 30 40 50 60 70 80 90 100",
+      "My answer is 12345678",
+      "3 + 4 + 5 + 6 + 7 + 8 + 9 = 42",
+      "1+2+3+4+5+6+7+8+9",
+      "pi is about 3.14159",
+      "the sequence goes 2 4 8 16 32 64 128 256",
+    ];
+    for (const answer of answers) {
+      expect(scrubText(answer), answer).toBe(answer);
+    }
   });
 });
 
@@ -55,6 +85,39 @@ describe("redactDeep", () => {
 
     expect(redactDeep({ a: { b: { c: "deep" } } }, 1)).toEqual({
       a: "[TRUNCATED]",
+    });
+  });
+
+  it("detects a cycle that closes further down the path", () => {
+    const root: Record<string, unknown> = { label: "root" };
+    root.child = { label: "child", back: root };
+    expect(redactDeep(root)).toEqual({
+      label: "root",
+      child: { label: "child", back: "[CIRCULAR]" },
+    });
+  });
+
+  // PRO-23: an object referenced twice in parallel is not a cycle. Dropping it
+  // meant trace metadata lost data silently.
+  it("keeps an object that is shared rather than circular", () => {
+    const shared = { score: 4 };
+    expect(redactDeep({ first: shared, second: shared })).toEqual({
+      first: { score: 4 },
+      second: { score: 4 },
+    });
+
+    const criterion = { id: "c1" };
+    expect(redactDeep({ criteria: [criterion, criterion] })).toEqual({
+      criteria: [{ id: "c1" }, { id: "c1" }],
+    });
+
+    const rubric = { skillId: "skill_1", levels: [1, 2, 3] };
+    expect(
+      redactDeep({ input: { rubric }, output: { rubric }, meta: { rubric } }),
+    ).toEqual({
+      input: { rubric },
+      output: { rubric },
+      meta: { rubric },
     });
   });
 

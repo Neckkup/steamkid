@@ -15,6 +15,20 @@
 
 export const REDACTED = "[REDACTED]";
 
+/**
+ * Version of this redaction layer.
+ *
+ * Bump it on any change to `DENIED_KEY_PATTERNS`, the scrubbing regexes or
+ * `redactDeep`'s traversal. It is written to `app.ai_verdict.redaction_version`
+ * and onto every Langfuse trace, so "which redaction rules produced this
+ * payload" stays answerable for rows and traces recorded months ago — including
+ * the ones recorded before we found a gap.
+ *
+ * This is the single source: nothing should hardcode a redaction version string
+ * anywhere else.
+ */
+export const REDACTION_VERSION = "1.1.0";
+
 /** Keys whose values are never sent outside our infrastructure, at any depth. */
 const DENIED_KEY_PATTERNS: RegExp[] = [
   /pass(word|phrase)/i,
@@ -43,10 +57,59 @@ const DENIED_KEY_PATTERNS: RegExp[] = [
 ];
 
 const EMAIL_RE = /[\w.+-]+@[\w-]+\.[\w.-]+/g;
-/** International-ish phone runs: 8+ digits with optional separators. */
-const PHONE_RE = /(?:\+?\d[\d\s().-]{7,}\d)/g;
-/** Thai national ID: 13 digits, optionally dash-separated. */
-const THAI_ID_RE = /\b\d(?:[\s-]?\d){12}\b/g;
+/**
+ * Phone-shaped digit runs.
+ *
+ * Deliberately narrow. The obvious pattern — "8+ digits with optional
+ * separators" — also matches a child's maths work, because "1 2 3 4 5 6 7 8 9"
+ * and "I counted 100 200 300 400 500 marbles" are digits with separators too.
+ * Redacting those makes a grading trace unreadable, which defeats the point of
+ * tracing the grader at all.
+ *
+ * So a match needs one of:
+ *   - an explicit `+` country code,
+ *   - parentheses or dashes as separators (phone punctuation, not maths),
+ *   - a Thai-style leading `0` trunk group,
+ *   - a contiguous run of 9+ digits (the pre-existing threshold; `12345678`
+ *     stays visible).
+ *
+ * Space-separated digits on their own are never a phone here. Known cost:
+ * `081 234 5678` is caught by the leading-`0` rule, but a space-separated
+ * foreign number with no `+` and no leading `0` is not. That is acceptable —
+ * this module's stated design is allow-list first, regex as the safety net.
+ * Known false positive: a US-style `01-15-2024` date. ISO dates are unaffected.
+ */
+const PHONE_RE = new RegExp(
+  [
+    // +66 81 234 5678, +66-81-234-5678, +6681234567
+    String.raw`\+\d[\d\s()-]{6,}\d`,
+    // (02) 123-4567, (081)234-5678
+    String.raw`\(\d{1,4}\)[\s-]?\d{2,4}[\s-]?\d{3,4}`,
+    // 081-234-5678, 02-123-4567
+    String.raw`\b\d{2,4}-\d{2,4}-\d{3,4}\b`,
+    // 081 234 5678 — Thai trunk prefix; maths answers do not start a number with 0.
+    String.raw`\b0\d{1,3}[\s-]\d{2,4}[\s-]\d{3,4}\b`,
+    // 0812345678 — a contiguous run longer than ordinary schoolwork.
+    String.raw`\b\d{9,}\b`,
+  ].join("|"),
+  "g",
+);
+/**
+ * Thai national ID, in the two shapes it is actually written: 13 contiguous
+ * digits, or the `X-XXXX-XXXXX-XX-X` grouping.
+ *
+ * It used to accept any 13 digits with an optional separator between each one,
+ * which meant "10 20 30 40 50 60 70 80 90 100" — 13 digits — was redacted as a
+ * national ID. Same failure mode as `PHONE_RE` below: a loose digit run is a
+ * child's maths answer far more often than it is an identifier.
+ */
+const THAI_ID_RE = new RegExp(
+  [
+    String.raw`\b\d{13}\b`,
+    String.raw`\b\d[\s-]\d{4}[\s-]\d{5}[\s-]\d{2}[\s-]\d\b`,
+  ].join("|"),
+  "g",
+);
 const URL_CREDENTIALS_RE = /\/\/[^/\s:@]+:[^/\s:@]+@/g;
 
 export function isDeniedKey(key: string): boolean {
@@ -66,8 +129,14 @@ type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 
 /**
  * Walk an arbitrary value and redact denied keys and identifier-shaped text.
- * Cycles are replaced with `"[CIRCULAR]"`; depth is capped so a hostile or
- * accidentally huge payload cannot stall the request.
+ * Genuine cycles are replaced with `"[CIRCULAR]"`; depth is capped so a hostile
+ * or accidentally huge payload cannot stall the request.
+ *
+ * "Cycle" means an object that contains itself along the current path — not an
+ * object that simply appears twice. A shared object (the same rubric criterion
+ * referenced from two places in trace metadata) is walked at every position it
+ * occurs. Because `seen` tracks path ancestry, a wide shared graph can be
+ * re-walked; `maxDepth` is what bounds that work.
  */
 export function redactDeep(value: unknown, maxDepth = 8): Json {
   return walk(value, maxDepth, new WeakSet<object>());
@@ -90,18 +159,26 @@ function walk(value: unknown, depth: number, seen: WeakSet<object>): Json {
 
   if (typeof value === "object") {
     const obj = value as object;
+    // `seen` is the ancestry of the current path, not every object ever visited:
+    // we drop `obj` again once its subtree is done so a parallel second
+    // reference to the same object is still walked instead of silently becoming
+    // "[CIRCULAR]".
     if (seen.has(obj)) return "[CIRCULAR]";
     seen.add(obj);
 
-    if (Array.isArray(value)) {
-      return value.map((item) => walk(item, depth - 1, seen));
-    }
+    try {
+      if (Array.isArray(value)) {
+        return value.map((item) => walk(item, depth - 1, seen));
+      }
 
-    const out: { [key: string]: Json } = {};
-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = isDeniedKey(key) ? REDACTED : walk(item, depth - 1, seen);
+      const out: { [key: string]: Json } = {};
+      for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+        out[key] = isDeniedKey(key) ? REDACTED : walk(item, depth - 1, seen);
+      }
+      return out;
+    } finally {
+      seen.delete(obj);
     }
-    return out;
   }
 
   return REDACTED;

@@ -142,3 +142,17 @@ someone adds without reading this file.
 verdict rows. Bump it whenever the rules change — it is what makes "which
 redaction rules produced this payload" answerable for data recorded months ago,
 including data recorded before we found a gap.
+
+### Redaction version history
+
+A bump only answers "which rules" if someone wrote down what changed. Add a row
+here every time.
+
+| Version | Change |
+| --- | --- |
+| `1.0.0` | Initial layer: denied-key patterns, email/phone/Thai-ID/URL-credential scrubbing, depth-capped deep walk. |
+| `1.1.0` | Over-redaction fixes ([PRO-23](/PRO/issues/PRO-23)). `redactDeep` now tracks path ancestry, so an object referenced twice in parallel is no longer replaced with `[CIRCULAR]`. `PHONE_RE` and `THAI_ID_RE` no longer treat space-separated digit runs as identifiers, so a child's maths work survives into the trace. Nothing became less redacted for real identifier shapes. |
+
+Payloads written under `1.0.0` may be missing repeated sub-objects and may have
+maths answers replaced with `[REDACTED]`; that is the layer's fault, not the
+model's. Keep it in mind when reading a trace recorded before this bump.
