@@ -47,6 +47,20 @@ const schema = z.object({
   LANGFUSE_PUBLIC_KEY: blankAsUndefined(z.string().min(1)),
   LANGFUSE_SECRET_KEY: blankAsUndefined(z.string().min(1)),
   LANGFUSE_BASEURL: blankAsUndefined(z.string().url()),
+  /**
+   * Langfuse tracing environment. Normally derived from `APP_ENV`; override only
+   * to carve out a sub-environment (e.g. `ci`, `load-test`) that must not land
+   * in the same charts as real traffic. Langfuse requires lowercase
+   * alphanumerics with `-`/`_`, and reserves the `langfuse` prefix.
+   */
+  LANGFUSE_TRACING_ENVIRONMENT: blankAsUndefined(
+    z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9_-]*$/, "must be lowercase alphanumeric with - or _")
+      .refine((value) => !value.startsWith("langfuse"), {
+        message: "the `langfuse` prefix is reserved by Langfuse",
+      }),
+  ),
 
   /** Sentry. The DSN is public by design; the auth token is not. */
   NEXT_PUBLIC_SENTRY_DSN: blankAsUndefined(z.string().min(1)),
@@ -70,6 +84,23 @@ export const env: Env = parsed.data;
 
 export const isLangfuseConfigured =
   Boolean(env.LANGFUSE_PUBLIC_KEY) && Boolean(env.LANGFUSE_SECRET_KEY);
+
+/**
+ * The Langfuse environment every trace, observation and score is tagged with.
+ *
+ * This is the separation the dashboards and alerts depend on: a cost alert
+ * scoped to `production` must never fire because someone ran the grading smoke
+ * test on their laptop, and the training-data export must never pick up a
+ * developer's throwaway run.
+ */
+const APP_ENV_TO_LANGFUSE_ENVIRONMENT: Record<Env["APP_ENV"], string> = {
+  local: "development",
+  preview: "preview",
+  production: "production",
+};
+
+export const langfuseEnvironment: string =
+  env.LANGFUSE_TRACING_ENVIRONMENT ?? APP_ENV_TO_LANGFUSE_ENVIRONMENT[env.APP_ENV];
 
 export const isSentryConfigured = Boolean(env.NEXT_PUBLIC_SENTRY_DSN);
 

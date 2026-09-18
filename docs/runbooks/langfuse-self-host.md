@@ -33,6 +33,12 @@ cd langfuse
 docker compose up -d
 ```
 
+**Pin a v4 tag, not v3.** Alerting is the deciding constraint: Langfuse's built-in
+alerts (Slack / webhook / GitHub Actions) are self-hostable only from v4, and the
+company rule is that we do not write our own alerting. On v3 the cost and error-rate
+alerts in `ai-observability.md` cannot be configured at all. v3 also loses
+`GET /api/public/v2/metrics`, which the dashboards query.
+
 Before the first `up`, generate fresh values for every secret in the compose
 `.env`. At minimum: `NEXTAUTH_SECRET`, `SALT`, `ENCRYPTION_KEY`, the Postgres
 password, the ClickHouse password, the Redis password, and the MinIO root

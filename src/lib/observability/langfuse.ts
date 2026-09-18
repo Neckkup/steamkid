@@ -1,6 +1,6 @@
 import { Langfuse } from "langfuse";
 
-import { env, isLangfuseConfigured } from "@/lib/env";
+import { env, isLangfuseConfigured, langfuseEnvironment } from "@/lib/env";
 import { pickAllowed, redactDeep } from "@/lib/privacy/redact";
 
 /**
@@ -27,8 +27,27 @@ export function getLangfuse(): Langfuse | null {
     // Every trace carries the tier so preview noise never pollutes production
     // dashboards or the eventual training-data selection queries.
     release: env.APP_ENV,
+    // Langfuse's first-class environment separation: every trace, observation
+    // and score is tagged, and the UI/API filter on it. `release` alone is a
+    // free-text label — this is the field dashboards and alerts scope to, so a
+    // developer's experiment can never move a production cost chart.
+    environment: langfuseEnvironment,
+    // Last line of defence. `traceAiCall` already redacts what it builds, but
+    // `mask` runs over the input/output of *every* event the SDK ships,
+    // including generations and spans a feature attaches itself. Someone adding
+    // an observation without reading this file still cannot leak a raw email.
+    mask: ({ data }) => redactDeep(data),
   });
   return client;
+}
+
+/**
+ * Link to a trace in the Langfuse UI. Put this in logs and issue comments —
+ * "the grading was wrong" is only debuggable if anyone can open the exact call.
+ */
+export function traceUrl(traceId: string | null): string | null {
+  if (!traceId || !env.LANGFUSE_BASEURL) return null;
+  return `${env.LANGFUSE_BASEURL.replace(/\/$/, "")}/trace/${traceId}`;
 }
 
 /**
@@ -47,6 +66,15 @@ export const ALLOWED_TRACE_METADATA_KEYS = [
   "model",
   "locale",
   "gradeLevel",
+  // Added in PRO-5. `feature` is the coarse grouping every cost/latency
+  // dashboard slices by (grading vs feedback vs learning-path), `promptLabel`
+  // records which Langfuse label resolved (`production` / `latest`), and
+  // `promptSource` says whether the prompt came from Langfuse or from the
+  // in-repo fallback — a run served by the fallback is not a run you can
+  // attribute to a prompt version.
+  "feature",
+  "promptLabel",
+  "promptSource",
 ] as const;
 
 export type TraceMetadata = Partial<
