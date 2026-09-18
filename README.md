@@ -101,7 +101,7 @@ they are never committed and never pasted into an issue comment.
 | Tool | Purpose | URL |
 | --- | --- | --- |
 | Vercel | deploys, preview URLs, rollback | _pending account connection_ |
-| Langfuse | AI traces, prompts, evals | _pending self-host deploy_ |
+| Langfuse | AI traces, prompts, evals | _pending self-host deploy — see `docs/runbooks/langfuse-self-host.md`_ |
 | Sentry | web app errors | https://project-qq.sentry.io/projects/steamkid/ |
 
 Update this table the moment an account exists. The team references these URLs
