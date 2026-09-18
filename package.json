@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "ai:smoke": "tsx --env-file-if-exists=.env.local scripts/ai-smoke.ts",
+    "langfuse:verify": "tsx --env-file-if-exists=.env.local scripts/langfuse-verify.ts",
     "langfuse:prompts": "tsx --env-file-if-exists=.env.local scripts/langfuse-sync-prompts.ts",
     "langfuse:dashboards": "tsx --env-file-if-exists=.env.local scripts/langfuse-sync-dashboards.ts",
     "db:generate": "prisma generate",
@@ -18,8 +19,8 @@
     "db:migrate:dev": "prisma migrate dev"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.127.0",
     "@auth/prisma-adapter": "^2.11.3",
+    "@google/genai": "^2.23.0",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
     "@sentry/nextjs": "^10.75.0",

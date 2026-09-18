@@ -1,6 +1,7 @@
 # Runbook — Langfuse self-host
 
-- **Status:** ready to execute, waiting on VM spend approval
+- **Status:** spend approved (board approval `067a3826`, ≈USD 17/mo); waiting only
+  on a provisioned host
 - **Owner:** CTO
 - **Issue:** PRO-12
 - **Why self-hosted at all:** `docs/adr/0002-observability-and-privacy.md`
@@ -29,15 +30,34 @@ S3-compatible storage (MinIO). Use it — do not hand-assemble the services.
 ```bash
 git clone https://github.com/langfuse/langfuse.git
 cd langfuse
-# pin a release tag rather than tracking main
+git checkout v4.38.0   # exact tag — see below, do not substitute
 docker compose up -d
 ```
 
-**Pin a v4 tag, not v3.** Alerting is the deciding constraint: Langfuse's built-in
-alerts (Slack / webhook / GitHub Actions) are self-hostable only from v4, and the
-company rule is that we do not write our own alerting. On v3 the cost and error-rate
-alerts in `ai-observability.md` cannot be configured at all. v3 also loses
-`GET /api/public/v2/metrics`, which the dashboards query.
+**The tag is `v4.38.0`, and "pin a release tag" is not sufficient instruction.**
+Upstream maintains v3 and v4 *in parallel*: on 2026-09-18 the newest releases were
+v4.38.0 (17 Sep) and v3.225.8 (16 Sep). Reaching for a recent-looking tag can
+therefore land you on a v3 patch, which boots fine and accepts traces while
+silently failing two things we have already committed to:
+
+- **Alerting.** Langfuse's built-in alerts (Slack / webhook / GitHub Actions) are
+  self-hostable only from v4, and the company rule is that we do not write our own
+  alerting. On v3, none of the six alerts in `ai-observability.md` can be
+  configured at all.
+- **`GET /api/public/v2/metrics`**, which every widget in
+  `src/lib/observability/dashboards.ts` queries.
+
+Both failures are invisible from the ingest side. So this is enforced in code, not
+trusted to whoever is at the keyboard:
+
+```bash
+npm run langfuse:verify   # reads GET /api/public/health, exits 1 on v3
+```
+
+Run it the moment the instance answers on HTTPS, and **before** any
+`langfuse:prompts --push`, `langfuse:dashboards --push`, or `ai:smoke`. The check
+lives in `src/lib/observability/langfuse-version.ts`; bumping
+`PINNED_LANGFUSE_TAG` there and the tag above is one deliberate edit, not a drift.
 
 Before the first `up`, generate fresh values for every secret in the compose
 `.env`. At minimum: `NEXTAUTH_SECRET`, `SALT`, `ENCRYPTION_KEY`, the Postgres
@@ -89,6 +109,7 @@ without these, which is the intended behaviour: no untraced deployed AI calls.
 
 ## 5. Prove it
 
+- `npm run langfuse:verify` exits 0 (instance is v4+, not a v3 patch)
 - `/api/health` on the deployed app reports `langfuse: true`
 - one graded item produces a visible trace in the Langfuse UI
 - the trace contains the redacted payload shape we expect, not raw identifier
