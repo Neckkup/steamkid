@@ -11,7 +11,7 @@
 | --- | --- | --- |
 | Framework | Next.js, App Router, TypeScript strict | 16.3.5 |
 | Styling | Tailwind CSS | v4 |
-| Database | Postgres | managed, provider TBD |
+| Database | Postgres | managed; provider in [ADR 0003](0003-managed-postgres-provider.md) |
 | ORM / migrations | Prisma with the `pg` driver adapter | 7.10 |
 | Auth | Auth.js (`next-auth` v5) + `@auth/prisma-adapter` | 5.0 beta |
 | AI provider | Anthropic (external API) | — |
@@ -59,6 +59,11 @@ because auth and the database would be coupled to one vendor exactly where our d
 is most sensitive, and because the behaviour-event and export paths are the parts we
 least want to fit into someone else's abstractions. We keep plain Postgres, which any
 provider can host.
+
+> Read this together with [ADR 0003](0003-managed-postgres-provider.md), which picks
+> Supabase to *host* that plain Postgres. It is not a reversal: what is rejected here
+> is the bundle (Supabase Auth, Storage, PostgREST, `@supabase/supabase-js`), and ADR
+> 0003 excludes all of it by name. The connection string is the entire integration.
 
 **Drizzle instead of Prisma.** Lighter and closer to SQL, but Prisma's migration
 tooling and generated types are what keeps four agents editing one schema without
