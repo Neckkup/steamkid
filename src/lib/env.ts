@@ -1,0 +1,90 @@
+import { z } from "zod";
+
+/**
+ * Single source of truth for configuration.
+ *
+ * Rules for this file:
+ * - Secrets are read from `process.env` only. Never hard-code a value here.
+ * - Observability vars are optional so the app still boots in a bare local
+ *   checkout, but `assertObservabilityReady()` fails the deployed environments
+ *   that must have them (see `src/lib/observability/langfuse.ts`).
+ */
+/**
+ * Hosting platforms and CI commonly define a variable as an empty string rather
+ * than leaving it unset. Treat `""` as "not configured" so a blank placeholder
+ * never fails the build or, worse, gets used as a real key.
+ */
+const blankAsUndefined = <T extends z.ZodType>(inner: T) =>
+  z.preprocess((value) => (value === "" ? undefined : value), inner.optional());
+
+const schema = z.object({
+  NODE_ENV: blankAsUndefined(z.enum(["development", "test", "production"])).transform(
+    (value) => value ?? "development",
+  ),
+
+  /** Deployment tier. Drives how strict the observability checks are. */
+  APP_ENV: blankAsUndefined(z.enum(["local", "preview", "production"])).transform(
+    (value) => value ?? "local",
+  ),
+
+  /** Public base URL of the running deployment, used by auth callbacks. */
+  APP_URL: blankAsUndefined(z.string().url()).transform(
+    (value) => value ?? "http://localhost:3000",
+  ),
+
+  /** Postgres connection string (pooled). */
+  DATABASE_URL: blankAsUndefined(z.string().min(1)),
+  /** Direct (unpooled) Postgres connection string, used by migrations. */
+  DIRECT_URL: blankAsUndefined(z.string().min(1)),
+
+  /** Auth.js session secret. */
+  AUTH_SECRET: blankAsUndefined(z.string().min(1)),
+
+  /** LLM provider key. Server-side only — never expose to the browser. */
+  ANTHROPIC_API_KEY: blankAsUndefined(z.string().min(1)),
+
+  /** Langfuse. `LANGFUSE_BASEURL` points at our self-hosted instance. */
+  LANGFUSE_PUBLIC_KEY: blankAsUndefined(z.string().min(1)),
+  LANGFUSE_SECRET_KEY: blankAsUndefined(z.string().min(1)),
+  LANGFUSE_BASEURL: blankAsUndefined(z.string().url()),
+
+  /** Sentry. The DSN is public by design; the auth token is not. */
+  NEXT_PUBLIC_SENTRY_DSN: blankAsUndefined(z.string().min(1)),
+  SENTRY_ORG: blankAsUndefined(z.string().min(1)),
+  SENTRY_PROJECT: blankAsUndefined(z.string().min(1)),
+  SENTRY_AUTH_TOKEN: blankAsUndefined(z.string().min(1)),
+});
+
+export type Env = z.infer<typeof schema>;
+
+const parsed = schema.safeParse(process.env);
+
+if (!parsed.success) {
+  const details = parsed.error.issues
+    .map((issue) => `  - ${issue.path.join(".")}: ${issue.message}`)
+    .join("\n");
+  throw new Error(`Invalid environment configuration:\n${details}`);
+}
+
+export const env: Env = parsed.data;
+
+export const isLangfuseConfigured =
+  Boolean(env.LANGFUSE_PUBLIC_KEY) && Boolean(env.LANGFUSE_SECRET_KEY);
+
+export const isSentryConfigured = Boolean(env.NEXT_PUBLIC_SENTRY_DSN);
+
+export const isDatabaseConfigured = Boolean(env.DATABASE_URL);
+
+/**
+ * Deployed environments must be observable. A missing Langfuse key in preview
+ * or production is a configuration bug, not a soft degradation: an AI call we
+ * cannot trace is, by team definition, not finished.
+ */
+export function assertObservabilityReady(): void {
+  if (env.APP_ENV === "local") return;
+  if (!isLangfuseConfigured) {
+    throw new Error(
+      `APP_ENV=${env.APP_ENV} requires LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY.`,
+    );
+  }
+}

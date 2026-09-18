@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        # No secrets here on purpose: the build must succeed without them, so a
+        # fork or a fresh clone is never blocked on credentials. Source-map
+        # upload to Sentry only runs where SENTRY_* exists (see next.config.ts).
+        run: npm run build
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reject committed credentials
+        # Cheap backstop so a key can never land in the repo unnoticed.
+        run: |
+          if git grep -nIE '(sk-ant-[A-Za-z0-9-]{16,}|pk-lf-[A-Za-z0-9-]{16,}|sk-lf-[A-Za-z0-9-]{16,}|ghp_[A-Za-z0-9]{20,}|https://[0-9a-f]{16,}@[a-z0-9.]*ingest[a-z0-9.]*sentry\.io)' -- . ':!.github/workflows/ci.yml'; then
+            echo "::error::A credential-shaped string is committed to the repo."
+            exit 1
+          fi
+          echo "No credential-shaped strings found."

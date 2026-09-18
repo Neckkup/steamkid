@@ -1,0 +1,54 @@
+// steamkid data model.
+//
+// Ownership: the real domain schema (learners, consent records, behaviour
+// events, submissions, AI verdicts, teacher corrections) is designed in PRO-3
+// and implemented by Backend in PRO-7. This file deliberately ships only the
+// datasource/generator wiring plus the two constraints that are expensive to
+// retrofit, so the first migration already has them:
+//
+//   1. A pseudonymous `Learner.id` surrogate key. Nothing outside our
+//      infrastructure ever sees anything else for a child.
+//   2. A consent record that is required before any behaviour event is stored.
+//
+// Event tables are append-only with a versioned payload; never mutate history
+// in place, add a new row and a new `payloadVersion` instead.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Prisma 7 moved connection URLs out of the schema: the CLI reads them from
+// `prisma.config.ts`, and the runtime client gets an explicit driver adapter
+// (see `src/lib/db.ts`).
+datasource db {
+  provider = "postgresql"
+}
+
+/// A child, referenced externally only by this pseudonymous id.
+/// Identifying fields (name, birth date, guardian contact) are added in PRO-7
+/// and must never be joined into an export or an external trace.
+model Learner {
+  id        String          @id @default(cuid())
+  createdAt DateTime        @default(now())
+  consents  ConsentRecord[]
+
+  @@map("learners")
+}
+
+/// Parental/guardian consent. Absence of an active record means we collect
+/// nothing beyond what is required to run the session.
+model ConsentRecord {
+  id            String    @id @default(cuid())
+  learnerId     String    @map("learner_id")
+  learner       Learner   @relation(fields: [learnerId], references: [id], onDelete: Cascade)
+  /// e.g. behaviour_analytics, ai_grading, training_data_export
+  scope         String
+  granted       Boolean
+  /// Version of the privacy notice the guardian actually saw.
+  policyVersion String    @map("policy_version")
+  grantedAt     DateTime  @default(now()) @map("granted_at")
+  revokedAt     DateTime? @map("revoked_at")
+
+  @@index([learnerId, scope])
+  @@map("consent_records")
+}
