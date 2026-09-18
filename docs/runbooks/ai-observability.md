@@ -152,7 +152,22 @@ here every time.
 | --- | --- |
 | `1.0.0` | Initial layer: denied-key patterns, email/phone/Thai-ID/URL-credential scrubbing, depth-capped deep walk. |
 | `1.1.0` | Over-redaction fixes ([PRO-23](/PRO/issues/PRO-23)). `redactDeep` now tracks path ancestry, so an object referenced twice in parallel is no longer replaced with `[CIRCULAR]`. `PHONE_RE` and `THAI_ID_RE` no longer treat space-separated digit runs as identifiers, so a child's maths work survives into the trace. Nothing became less redacted for real identifier shapes. |
+| `1.2.0` | Token *counts* survive ([PRO-25](/PRO/issues/PRO-25)). The broad `/token/i` deny rule was blanking the SDK usage numbers (`inputTokens`, `cacheReadTokens`), which read as a broken redaction layer. `/token/i` is unchanged; `redactDeep` now exempts a key only when it is in the counting vocabulary (`TOKEN_COUNT_KEY_RE`) **and** its value is a finite number. No string value became less redacted. |
 
 Payloads written under `1.0.0` may be missing repeated sub-objects and may have
 maths answers replaced with `[REDACTED]`; that is the layer's fault, not the
 model's. Keep it in mind when reading a trace recorded before this bump.
+Payloads written before `1.2.0` show `[REDACTED]` where a token count should be;
+the authoritative numbers for those traces are the generation's `usageDetails` /
+`costDetails`, which never went through key redaction.
+
+### Relaxing a redaction rule
+
+A denied key is relaxed by adding a narrow exception next to the rule, never by
+weakening the rule itself. The deny patterns have to fail closed for a key
+nobody has thought of yet (`resetToken`, `inviteToken`, `otpToken` are all
+caught by `/token/i` today without being listed anywhere). An exception must
+name the keys it releases and, where the safe values have a type the unsafe ones
+do not, check the value as well — that is what keeps `{ inputTokens: "eyJ..." }`
+redacted while `{ inputTokens: 412 }` is exported. Any exception ships with
+tests on both sides and a `REDACTION_VERSION` bump.

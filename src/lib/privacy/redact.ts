@@ -27,7 +27,7 @@ export const REDACTED = "[REDACTED]";
  * This is the single source: nothing should hardcode a redaction version string
  * anywhere else.
  */
-export const REDACTION_VERSION = "1.1.0";
+export const REDACTION_VERSION = "1.2.0";
 
 /** Keys whose values are never sent outside our infrastructure, at any depth. */
 const DENIED_KEY_PATTERNS: RegExp[] = [
@@ -55,6 +55,47 @@ const DENIED_KEY_PATTERNS: RegExp[] = [
   /\bip\b/i,
   /user[-_]?agent/i,
 ];
+
+/**
+ * Keys that name a *token count* rather than a token.
+ *
+ * `/token/i` above is deliberately broad, and it was eating the usage numbers
+ * the model SDK reports (`inputTokens`, `cacheReadTokens`), so a trace read
+ * `"inputTokens": "[REDACTED]"` and looked like the redaction layer was broken.
+ *
+ * The narrowing is expressed as an exception, not by loosening the deny rule:
+ * an unlisted secret-shaped key (`resetToken`, `inviteToken`, `otpToken`) must
+ * keep failing closed. Only a key in this measurement vocabulary is exempt, and
+ * only when its value is a finite number — a credential is a string, a count is
+ * not, so `{ inputTokens: "eyJhbGciOi..." }` is still redacted.
+ */
+const TOKEN_COUNT_KEY_RE = new RegExp(
+  "^(?:" +
+    [
+      // inputTokens, output_tokens, totalTokens, cacheCreationTokens, ...
+      String.raw`(?:input|output|total|prompt|completion|reasoning|thinking|billed|cached|cache[-_]?(?:creation|read|write))[-_]?tokens?`,
+      // tokenCount, tokens_used, tokenUsage, tokensTotal
+      String.raw`tokens?[-_]?(?:count|used|usage|total)`,
+      // numTokens, nTokens, maxTokens, tokenLimit
+      String.raw`(?:num|n|max|min|avg)[-_]?tokens?`,
+      String.raw`tokens?[-_]?(?:limit|max)`,
+    ].join("|") +
+    ")$",
+  "i",
+);
+
+/**
+ * True when a denied key is really a numeric measurement and safe to export.
+ * Both halves matter: the key must be in the counting vocabulary *and* the
+ * value must be a finite number.
+ */
+function isNumericMeasurement(key: string, value: unknown): boolean {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    TOKEN_COUNT_KEY_RE.test(key)
+  );
+}
 
 const EMAIL_RE = /[\w.+-]+@[\w-]+\.[\w.-]+/g;
 /**
@@ -112,6 +153,11 @@ const THAI_ID_RE = new RegExp(
 );
 const URL_CREDENTIALS_RE = /\/\/[^/\s:@]+:[^/\s:@]+@/g;
 
+/**
+ * Strict key-only verdict. `redactDeep` may still export a denied key when
+ * `isNumericMeasurement` exempts it, so this is the conservative answer, not
+ * necessarily the one the walker reaches.
+ */
 export function isDeniedKey(key: string): boolean {
   return DENIED_KEY_PATTERNS.some((pattern) => pattern.test(key));
 }
@@ -173,7 +219,8 @@ function walk(value: unknown, depth: number, seen: WeakSet<object>): Json {
 
       const out: { [key: string]: Json } = {};
       for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-        out[key] = isDeniedKey(key) ? REDACTED : walk(item, depth - 1, seen);
+        const denied = isDeniedKey(key) && !isNumericMeasurement(key, item);
+        out[key] = denied ? REDACTED : walk(item, depth - 1, seen);
       }
       return out;
     } finally {

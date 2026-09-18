@@ -121,6 +121,55 @@ describe("redactDeep", () => {
     });
   });
 
+  // PRO-25: `/token/i` was redacting the SDK's usage numbers, so a trace read
+  // "inputTokens": "[REDACTED]" and looked like the layer was broken.
+  it("keeps numeric token counts", () => {
+    expect(
+      redactDeep({
+        usage: {
+          inputTokens: 412,
+          outputTokens: 24,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 1024,
+          total_tokens: 436,
+          tokenCount: 436,
+          maxTokens: 4096,
+        },
+      }),
+    ).toEqual({
+      usage: {
+        inputTokens: 412,
+        outputTokens: 24,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 1024,
+        total_tokens: 436,
+        tokenCount: 436,
+        maxTokens: 4096,
+      },
+    });
+  });
+
+  it("still redacts every token that could be a credential", () => {
+    const out = redactDeep({
+      token: "eyJhbGciOi",
+      tokens: ["eyJhbGciOi"],
+      accessToken: "at_1",
+      refresh_token: "rt_1",
+      idToken: "it_1",
+      apiToken: "api_1",
+      // Not in the counting vocabulary, so the broad deny rule still wins.
+      resetToken: "reset_1",
+      inviteToken: "inv_1",
+      otpToken: 123456,
+      // Counting vocabulary, but a string value is not a measurement.
+      inputTokens: "eyJhbGciOi",
+    }) as Record<string, string>;
+
+    for (const [key, value] of Object.entries(out)) {
+      expect(value, key).toBe(REDACTED);
+    }
+  });
+
   it("redacts an Error down to name and scrubbed message", () => {
     const out = redactDeep(new Error("failed for kid@example.com")) as {
       name: string;
