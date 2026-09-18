@@ -30,12 +30,16 @@ import { MAX_PAYLOAD_STRING_LENGTH } from "./registry";
 export const MAX_PAYLOAD_DEPTH = 4;
 
 /**
- * Outer bound on one serialised payload. The string and collection caps already
- * bound the legal maximum (a `string[]` of 50 × 200 characters is ~10 KB), so
- * this only ever fires on something the other caps would also reject — it is
- * the cheap check that runs before we walk anything.
+ * Outer bound on one serialised payload, in **bytes**.
+ *
+ * Generous on purpose. The string and collection caps are the real limits; this
+ * is only the cheap check that runs before we walk anything. Sized off the
+ * largest legal payload measured in UTF-8 rather than in characters: 50 × 200
+ * Thai characters is ~30 KB, not 10 KB, and a bound that fires first would
+ * label a leaking essay `payload_too_large` — true, unhelpful, and it hides the
+ * field that leaked.
  */
-export const MAX_PAYLOAD_BYTES = 16 * 1024;
+export const MAX_PAYLOAD_BYTES = 64 * 1024;
 
 export type PayloadGuardViolation =
   | { readonly kind: "oversized_string"; readonly path: string; readonly length: number }
