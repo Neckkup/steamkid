@@ -1,0 +1,511 @@
+/**
+ * "แรงและการเคลื่อนที่" — the first unit, chosen in the PRO-3 MVP scope.
+ *
+ * Three of the six planned lessons are written. The list screen shows three
+ * lessons because three exist; it does not show six cards with three of them
+ * dead. The remaining three are content work, tracked separately.
+ *
+ * Item ids are uuid5 values derived from stable names, so re-deriving them in
+ * the PRO-7 seed migration produces the same ids as the events already carry.
+ */
+
+import type { Course } from "./types";
+
+export const FORCE_AND_MOTION: Course = {
+  id: "2ba1554b-c937-52a5-a41a-462e576c6693",
+  slug: "force-and-motion",
+  title: "แรงและการเคลื่อนที่",
+  subject: "วิทยาศาสตร์เชิงสืบเสาะ",
+  gradeBand: "ป.4–ป.6",
+  lessons: [
+    {
+      id: "3c54f86c-8aac-5661-a622-e2b47beaf8e5",
+      slug: "what-is-force",
+      title: "แรงคืออะไร",
+      summary: "ผลักกับดึงคือแรงสองแบบที่หนูใช้อยู่ทุกวัน มาดูกันว่าแรงทำอะไรกับของได้บ้าง",
+      orderIndex: 1,
+      contentVersion: 1,
+      estMinutes: 8,
+      skillTags: ["SCI.OBSERVE", "SCI.CONCEPT_FORCE_MOTION", "SCI.EXPLAIN_EVIDENCE"],
+      exerciseSetId: "7f6f7de8-26ce-5259-8426-833fe81f36b8",
+      sections: [
+        {
+          id: "s1-push-pull",
+          heading: "แรงคือการผลักและการดึง",
+          paragraphs: [
+            "ตอนหนูเปิดประตู หนูออกแรงผลักหรือดึงประตู ตอนหนูเตะลูกบอล เท้าของหนูผลักลูกบอล ทั้งสองอย่างนี้คือ “แรง”",
+            "แรงมองไม่เห็น แต่เรารู้ว่ามีแรงเพราะเราเห็น “ผลของแรง” เช่น ของที่เคยอยู่เฉย ๆ แล้วเริ่มขยับ",
+          ],
+        },
+        {
+          id: "s2-what-force-does",
+          heading: "แรงทำอะไรได้บ้าง",
+          paragraphs: [
+            "แรงทำให้ของที่หยุดนิ่งเริ่มเคลื่อนที่ เช่น หนูผลักรถของเล่นที่จอดอยู่",
+            "แรงทำให้ของที่กำลังเคลื่อนที่หยุด เช่น หนูใช้มือรับลูกบอลที่ลอยมา",
+            "แรงทำให้ของเปลี่ยนทิศ เช่น ตีลูกปิงปองกลับไปอีกฝั่ง",
+            "แรงทำให้ของเปลี่ยนรูปร่าง เช่น บีบดินน้ำมันให้แบน",
+          ],
+        },
+        {
+          id: "s3-bigger-force",
+          heading: "แรงมากขึ้น เกิดอะไรขึ้น",
+          paragraphs: [
+            "ถ้าหนูผลักรถของเล่นเบา ๆ มันจะค่อย ๆ ไหลไป ถ้าหนูผลักแรงขึ้น มันจะพุ่งไปเร็วกว่าเดิม",
+            "นักวิทยาศาสตร์จะไม่พูดแค่ว่า “มันเร็วขึ้น” แต่จะบอกด้วยว่า “รู้ได้ยังไง” เช่น จับเวลาว่ารถวิ่งถึงเส้นชัยใน 3 วินาที ตอนผลักเบา และ 2 วินาที ตอนผลักแรง",
+          ],
+          note: {
+            label: "ลองคิดดู",
+            text: "ถ้าเพื่อนบอกว่า “ผลักแรงกว่าแล้วมันเร็วกว่า” หนูจะขอหลักฐานอะไรจากเพื่อน",
+          },
+        },
+      ],
+      items: [
+        {
+          id: "878a2fcf-0993-570e-9b3f-bdb5ae8663d2",
+          type: "mcq",
+          prompt: "ข้อใดคือ “แรง” ทั้งคู่",
+          difficulty: 1,
+          difficultyWeight: 0.8,
+          maxAttempts: 3,
+          hintTexts: ["ลองนึกว่าอะไรที่มือของหนูทำกับของได้บ้าง"],
+          skillWeights: { "SCI.CONCEPT_FORCE_MOTION": 1 },
+          contentVersion: 1,
+          choices: [
+            { id: "a", label: "ผลัก กับ ดึง" },
+            { id: "b", label: "มอง กับ ฟัง" },
+            { id: "c", label: "นับ กับ วัด" },
+            { id: "d", label: "ร้อน กับ เย็น" },
+          ],
+          correctChoiceId: "a",
+          explanation: "แรงคือการผลักหรือการดึง ส่วนการมอง ฟัง นับ วัด เป็นสิ่งที่เราทำเพื่อสังเกต ไม่ใช่แรง",
+        },
+        {
+          id: "832e9588-2e25-5a60-b69e-2c4894d992ff",
+          type: "mcq",
+          prompt: "ลูกบอลกลิ้งมาทางหนู หนูเอามือรับไว้จนลูกบอลหยุด แรงจากมือของหนูทำอะไรกับลูกบอล",
+          difficulty: 2,
+          difficultyWeight: 1.0,
+          maxAttempts: 3,
+          hintTexts: [
+            "ก่อนหนูรับ ลูกบอลกำลังทำอะไรอยู่ แล้วหลังรับล่ะ",
+            "แรงทำได้ 4 อย่าง คือ ทำให้เริ่มเคลื่อนที่ ทำให้หยุด เปลี่ยนทิศ และเปลี่ยนรูปร่าง",
+          ],
+          skillWeights: { "SCI.CONCEPT_FORCE_MOTION": 0.7, "SCI.OBSERVE": 0.3 },
+          contentVersion: 1,
+          choices: [
+            { id: "a", label: "ทำให้ลูกบอลเริ่มเคลื่อนที่" },
+            { id: "b", label: "ทำให้ลูกบอลที่เคลื่อนที่อยู่หยุดลง" },
+            { id: "c", label: "ทำให้ลูกบอลหนักขึ้น" },
+            { id: "d", label: "ไม่มีแรงเกิดขึ้นเลย" },
+          ],
+          correctChoiceId: "b",
+          explanation:
+            "ลูกบอลกำลังเคลื่อนที่อยู่ แล้วหยุด แปลว่ามีแรงมาหยุดมัน แรงนั้นมาจากมือของหนู แรงไม่ได้ทำให้ของหนักขึ้น",
+        },
+        {
+          id: "ff591f80-36ea-5159-b1bf-d5bd20100436",
+          type: "ordering",
+          prompt: "เรียงขั้นตอนการทดลอง “ผลักแรงขึ้น รถวิ่งเร็วขึ้นจริงไหม” ให้ถูกลำดับ",
+          difficulty: 2,
+          difficultyWeight: 1.0,
+          maxAttempts: 3,
+          hintTexts: ["ขั้นแรกสุดคือสิ่งที่ต้องทำก่อนจะเริ่มผลักรถ"],
+          skillWeights: { "CT.DECOMPOSE_SEQUENCE": 1 },
+          contentVersion: 1,
+          options: [
+            { id: "measure", label: "วัดระยะทางแล้วทำเส้นเริ่มกับเส้นชัย" },
+            { id: "push-soft", label: "ผลักรถเบา ๆ แล้วจับเวลา" },
+            { id: "push-hard", label: "ผลักรถแรงขึ้นจากจุดเดิม แล้วจับเวลาอีกครั้ง" },
+            { id: "compare", label: "เทียบเวลาสองครั้ง แล้วบอกว่าเห็นอะไร" },
+          ],
+          correctOrder: ["measure", "push-soft", "push-hard", "compare"],
+          explanation:
+            "ต้องตั้งเส้นเริ่มกับเส้นชัยก่อน ไม่งั้นเวลาสองครั้งเทียบกันไม่ได้ แล้วค่อยทดลองทีละแบบ และสรุปเป็นขั้นสุดท้าย",
+        },
+        {
+          id: "2857b376-fbfd-5dca-8285-d4bc69344fab",
+          type: "numeric",
+          prompt:
+            "ผลักรถเบา ๆ รถถึงเส้นชัยใน 6 วินาที ผลักแรงขึ้น รถถึงเส้นชัยใน 4 วินาที รถเร็วขึ้นเท่ากับกี่วินาที",
+          difficulty: 1,
+          difficultyWeight: 0.8,
+          maxAttempts: 3,
+          hintTexts: ["เอาเวลาครั้งแรกลบเวลาครั้งที่สอง"],
+          skillWeights: { "MATH.QUANT_REASONING": 1 },
+          contentVersion: 1,
+          correctValue: 2,
+          tolerance: 0,
+          unit: "วินาที",
+          explanation: "6 − 4 = 2 รถใช้เวลาน้อยลง 2 วินาที แปลว่ามันไปถึงเส้นชัยเร็วขึ้น",
+        },
+        {
+          id: "5a53bf55-c0f8-5f3b-9278-6bf3ae94ffe8",
+          type: "short_text",
+          prompt:
+            "หนูเห็นกล่องใบหนึ่งที่เคยอยู่เฉย ๆ แล้วตอนนี้กำลังเลื่อนไปข้างหน้า หนูรู้ได้อย่างไรว่ามีแรงมากระทำกับกล่อง",
+          difficulty: 2,
+          difficultyWeight: 1.0,
+          maxAttempts: 3,
+          hintTexts: ["บอกสิ่งที่หนู “เห็น” ก่อน แล้วค่อยบอกว่ามันแปลว่าอะไร"],
+          skillWeights: { "SCI.EXPLAIN_EVIDENCE": 0.7, "COMM.SCI_WRITING": 0.3 },
+          contentVersion: 1,
+          rubricCode: "SCI_CER_SHORT",
+          successCriteria: [
+            "บอกสิ่งที่สังเกตเห็นจริง ๆ อย่างน้อยหนึ่งอย่าง",
+            "เชื่อมสิ่งที่เห็นกับคำว่าแรง",
+          ],
+          minChars: 20,
+        },
+        {
+          id: "1219792e-b78d-57dc-a9ee-320253a213d3",
+          type: "long_text",
+          prompt:
+            "เล่าเหตุการณ์หนึ่งวันนี้ที่หนูใช้แรง แล้วอธิบายว่าแรงของหนูทำอะไรกับของชิ้นนั้น (ทำให้เริ่มเคลื่อนที่ หยุด เปลี่ยนทิศ หรือเปลี่ยนรูปร่าง)",
+          difficulty: 2,
+          difficultyWeight: 1.0,
+          maxAttempts: 3,
+          hintTexts: [
+            "เริ่มจากเล่าว่าเกิดอะไรขึ้น แล้วค่อยบอกว่าแรงทำอะไร",
+            "ลองใช้คำว่า “ผลัก” หรือ “ดึง” ในคำตอบของหนู",
+          ],
+          skillWeights: { "COMM.SCI_WRITING": 0.6, "SCI.CONCEPT_FORCE_MOTION": 0.4 },
+          contentVersion: 1,
+          rubricCode: "SCI_CER_LONG",
+          successCriteria: [
+            "เล่าเหตุการณ์ให้คนอื่นเห็นภาพตาม",
+            "บอกว่าแรงของหนูทำอะไรกับของชิ้นนั้น",
+            "ใช้คำว่าผลักหรือดึงให้ถูกกับสิ่งที่เกิดขึ้น",
+          ],
+          minChars: 60,
+        },
+      ],
+    },
+    {
+      id: "5d23c649-8162-54ca-93ed-35a65f425a2e",
+      slug: "friction",
+      title: "แรงเสียดทาน",
+      summary: "ทำไมเลื่อนของบนพรมยากกว่าบนพื้นกระเบื้อง มาหาแรงที่แอบต้านหนูอยู่",
+      orderIndex: 2,
+      contentVersion: 1,
+      estMinutes: 9,
+      skillTags: ["SCI.OBSERVE", "SCI.HYPOTHESIS", "SCI.CONCEPT_FORCE_MOTION"],
+      exerciseSetId: "d79d9d53-ecd8-5c12-916d-8adc164a1dee",
+      sections: [
+        {
+          id: "s1-meet-friction",
+          heading: "แรงที่ต้านหนูอยู่",
+          paragraphs: [
+            "ลองเลื่อนหนังสือบนโต๊ะ มันจะค่อย ๆ ช้าลงแล้วหยุด ทั้งที่ไม่มีใครไปจับมัน",
+            "ที่มันหยุดเพราะมีแรงอีกแรงหนึ่งต้านอยู่ เรียกว่า “แรงเสียดทาน” แรงนี้เกิดตรงที่ผิวของสองอย่างถูกัน",
+          ],
+        },
+        {
+          id: "s2-rough-smooth",
+          heading: "ผิวหยาบกับผิวลื่น",
+          paragraphs: [
+            "ผิวยิ่งหยาบ แรงเสียดทานยิ่งมาก ของจึงหยุดเร็ว เช่น เลื่อนหนังสือบนพรม",
+            "ผิวยิ่งลื่น แรงเสียดทานยิ่งน้อย ของจึงไถลไปได้ไกล เช่น เลื่อนหนังสือบนกระจก",
+          ],
+        },
+        {
+          id: "s3-friction-helps",
+          heading: "แรงเสียดทานไม่ได้มีแต่ข้อเสีย",
+          paragraphs: [
+            "ถ้าไม่มีแรงเสียดทาน รองเท้าของหนูจะลื่นจนเดินไม่ได้ และรถจะเบรกไม่อยู่",
+            "บางครั้งเราอยากได้แรงเสียดทานมาก ๆ (พื้นห้องน้ำกันลื่น) บางครั้งเราอยากได้น้อย ๆ (สไลเดอร์)",
+          ],
+          note: {
+            label: "ลองคิดดู",
+            text: "ถ้าหนูอยากให้รถของเล่นไถลได้ไกลที่สุด หนูจะเลือกวิ่งบนพื้นแบบไหน และจะพิสูจน์ยังไงว่าเลือกถูก",
+          },
+        },
+      ],
+      items: [
+        {
+          id: "d2b407cb-f900-5a64-8db1-9d703aa48821",
+          type: "mcq",
+          prompt: "แรงเสียดทานเกิดขึ้นที่ตรงไหน",
+          difficulty: 1,
+          difficultyWeight: 0.8,
+          maxAttempts: 3,
+          hintTexts: ["นึกถึงจุดที่ของสองอย่างแตะกันอยู่"],
+          skillWeights: { "SCI.CONCEPT_FORCE_MOTION": 1 },
+          contentVersion: 1,
+          choices: [
+            { id: "a", label: "ตรงที่ผิวของสองอย่างถูกัน" },
+            { id: "b", label: "ตรงกลางของวัตถุ" },
+            { id: "c", label: "ในอากาศเหนือวัตถุเท่านั้น" },
+            { id: "d", label: "เกิดเฉพาะกับของที่หนักมาก" },
+          ],
+          correctChoiceId: "a",
+          explanation: "แรงเสียดทานเกิดตรงผิวสัมผัส ของเบาก็มีแรงเสียดทาน ถ้าผิวมันถูกันอยู่",
+        },
+        {
+          id: "52691111-f512-5253-877d-ca1a7fc44ac0",
+          type: "mcq",
+          prompt: "ผลักรถของเล่นด้วยแรงเท่ากันบนพื้น 3 แบบ รถบนพื้นแบบไหนน่าจะไถลได้ไกลที่สุด",
+          difficulty: 2,
+          difficultyWeight: 1.0,
+          maxAttempts: 3,
+          hintTexts: ["พื้นที่ลื่นกว่า มีแรงต้านน้อยกว่าหรือมากกว่า"],
+          skillWeights: { "SCI.HYPOTHESIS": 0.6, "SCI.CONCEPT_FORCE_MOTION": 0.4 },
+          contentVersion: 1,
+          choices: [
+            { id: "a", label: "พรมขนยาว" },
+            { id: "b", label: "พื้นหญ้า" },
+            { id: "c", label: "พื้นกระเบื้องเรียบ" },
+            { id: "d", label: "พื้นทราย" },
+          ],
+          correctChoiceId: "c",
+          explanation:
+            "กระเบื้องเรียบมีผิวลื่นที่สุดในสี่แบบนี้ แรงเสียดทานจึงน้อยที่สุด รถเลยไถลได้ไกลที่สุด",
+        },
+        {
+          id: "be8bb08c-3fed-55d9-b81e-e28bdd1fe53f",
+          type: "ordering",
+          prompt: "เรียงพื้นทั้งสี่แบบจาก “แรงเสียดทานน้อยที่สุด” ไปหา “มากที่สุด”",
+          difficulty: 3,
+          difficultyWeight: 1.25,
+          maxAttempts: 3,
+          hintTexts: [
+            "เริ่มจากพื้นที่ลื่นที่สุด",
+            "พื้นที่ขนหรือเม็ดของมันขยับได้ มักจะต้านมากกว่าพื้นแข็งเรียบ",
+          ],
+          skillWeights: { "CT.DECOMPOSE_SEQUENCE": 0.5, "SCI.CONCEPT_FORCE_MOTION": 0.5 },
+          contentVersion: 1,
+          options: [
+            { id: "ice", label: "น้ำแข็ง" },
+            { id: "tile", label: "กระเบื้องเรียบ" },
+            { id: "carpet", label: "พรมขนยาว" },
+            { id: "sand", label: "ทราย" },
+          ],
+          correctOrder: ["ice", "tile", "carpet", "sand"],
+          explanation:
+            "น้ำแข็งลื่นที่สุด ตามด้วยกระเบื้อง ส่วนพรมกับทรายมีผิวที่เกี่ยวและขยับได้ จึงต้านมากที่สุด",
+        },
+        {
+          id: "6cdee1ae-0571-5257-ab06-0ec80b19e5fe",
+          type: "numeric",
+          prompt:
+            "รถคันเดิม แรงผลักเท่าเดิม ไถลบนกระเบื้องได้ 120 เซนติเมตร แต่บนพรมได้ 45 เซนติเมตร บนกระเบื้องไถลได้ไกลกว่ากี่เซนติเมตร",
+          difficulty: 1,
+          difficultyWeight: 0.8,
+          maxAttempts: 3,
+          hintTexts: ["เอาระยะทางที่ไกลกว่าลบระยะทางที่สั้นกว่า"],
+          skillWeights: { "MATH.QUANT_REASONING": 1 },
+          contentVersion: 1,
+          correctValue: 75,
+          tolerance: 0,
+          unit: "เซนติเมตร",
+          explanation: "120 − 45 = 75 เซนติเมตร ตัวเลขนี้คือหลักฐานว่าพื้นสองแบบให้ผลต่างกันจริง",
+        },
+        {
+          id: "1f06238f-109e-590b-a22f-6d1e4d49f7ae",
+          type: "short_text",
+          prompt:
+            "เพื่อนบอกว่า “แรงเสียดทานไม่ดี ควรทำให้หายไปให้หมด” หนูเห็นด้วยไหม ยกตัวอย่างหนึ่งอย่างมาสนับสนุนคำตอบของหนู",
+          difficulty: 2,
+          difficultyWeight: 1.0,
+          maxAttempts: 3,
+          hintTexts: ["นึกถึงรองเท้า หรือเบรกของจักรยาน"],
+          skillWeights: { "SCI.EXPLAIN_EVIDENCE": 0.6, "COMM.SCI_WRITING": 0.4 },
+          contentVersion: 1,
+          rubricCode: "SCI_CER_SHORT",
+          successCriteria: ["บอกจุดยืนของหนูให้ชัด", "ยกตัวอย่างจริงมาหนึ่งอย่าง"],
+          minChars: 25,
+        },
+        {
+          id: "189e2b26-f7a9-58b6-93ed-82d1a04ebd12",
+          type: "long_text",
+          prompt:
+            "ออกแบบการทดลองของหนูเอง เพื่อตอบว่า “พื้นแบบไหนทำให้รถของเล่นไถลได้ไกลที่สุด” เขียนว่าจะทำอะไรบ้าง วัดอะไร และจะรู้ได้ยังไงว่าคำตอบถูก",
+          difficulty: 3,
+          difficultyWeight: 1.25,
+          maxAttempts: 3,
+          hintTexts: [
+            "สิ่งที่ต้องทำให้เหมือนกันทุกครั้งคืออะไร",
+            "หนูจะวัดอะไร ด้วยอะไร และวัดกี่ครั้ง",
+          ],
+          skillWeights: {
+            "SCI.HYPOTHESIS": 0.4,
+            "CT.DECOMPOSE_SEQUENCE": 0.3,
+            "COMM.SCI_WRITING": 0.3,
+          },
+          contentVersion: 1,
+          rubricCode: "SCI_DESIGN_LONG",
+          successCriteria: [
+            "บอกสิ่งที่จะเปลี่ยน และสิ่งที่ต้องทำให้เหมือนเดิมทุกครั้ง",
+            "บอกว่าจะวัดอะไรและวัดอย่างไร",
+            "บอกว่าผลแบบไหนจะแปลว่าคำตอบของหนูถูก",
+          ],
+          minChars: 80,
+        },
+      ],
+    },
+    {
+      id: "00a630f9-c15e-5258-b3f4-9929ad7d2858",
+      slug: "gravity",
+      title: "แรงโน้มถ่วง",
+      summary: "ของหนักตกถึงพื้นก่อนของเบาจริงไหม บทนี้มีคำตอบที่ทำให้หลายคนแปลกใจ",
+      orderIndex: 3,
+      contentVersion: 1,
+      estMinutes: 10,
+      skillTags: ["SCI.HYPOTHESIS", "SCI.EXPLAIN_EVIDENCE", "SCI.CONCEPT_FORCE_MOTION"],
+      exerciseSetId: "d615f157-1584-5846-b65b-3f0f0d385ac3",
+      sections: [
+        {
+          id: "s1-pulled-down",
+          heading: "โลกดึงทุกอย่างลง",
+          paragraphs: [
+            "ปล่อยดินสอจากมือ มันตกลงพื้นทุกครั้ง ไม่เคยลอยขึ้น เพราะโลกดึงมันลงมา แรงนี้เรียกว่าแรงโน้มถ่วง",
+            "แรงโน้มถ่วงดึงทุกอย่าง ทั้งดินสอ ทั้งตัวหนู ทั้งบ้านทั้งหลัง ตลอดเวลา แม้ตอนที่หนูนั่งอยู่เฉย ๆ",
+          ],
+        },
+        {
+          id: "s2-common-mistake",
+          heading: "ของหนักตกเร็วกว่าจริงไหม",
+          paragraphs: [
+            "หลายคนคิดว่าของหนักตกถึงพื้นก่อน ลองทดสอบดู: ถือหนังสือหนา ๆ กับยางลบ ยกให้สูงเท่ากัน แล้วปล่อยพร้อมกัน",
+            "สองอย่างนี้จะถึงพื้นพร้อมกัน หรือใกล้เคียงกันมาก ความหนักไม่ได้ทำให้ตกเร็วกว่า",
+            "แต่ถ้าเปลี่ยนจากยางลบเป็นกระดาษแผ่นบาง ๆ กระดาษจะตกช้ากว่าชัดเจน เพราะอากาศต้านกระดาษไว้ ไม่ใช่เพราะกระดาษเบา ลองขยำกระดาษแผ่นเดิมเป็นก้อนแล้วปล่อยใหม่ คราวนี้มันจะตกเร็วขึ้นทั้งที่หนักเท่าเดิม",
+          ],
+          note: {
+            label: "ระวังตรงนี้",
+            text: "ถ้าผลการทดลองไม่ตรงกับที่หนูเดาไว้ นั่นไม่ได้แปลว่าหนูทำผิด นักวิทยาศาสตร์เจอแบบนี้ทุกวัน และมันคือตอนที่สนุกที่สุด",
+          },
+        },
+        {
+          id: "s3-air-resistance",
+          heading: "อากาศก็เป็นแรงต้าน",
+          paragraphs: [
+            "ร่มชูชีพกางออกกว้าง ๆ เพื่อให้อากาศต้านมากขึ้น คนจึงลงช้าลงและปลอดภัย",
+            "เวลาจะเปรียบเทียบของสองอย่าง ต้องเปลี่ยนทีละอย่าง ถ้าเปลี่ยนทั้งน้ำหนักและรูปร่างพร้อมกัน เราจะไม่รู้ว่าอะไรคือสาเหตุ",
+          ],
+        },
+      ],
+      items: [
+        {
+          id: "d9f54442-73d6-5792-9859-bf24ae10d6c9",
+          type: "mcq",
+          prompt: "ปล่อยหนังสือหนากับยางลบจากความสูงเท่ากันพร้อมกัน จะเกิดอะไรขึ้น",
+          difficulty: 2,
+          difficultyWeight: 1.0,
+          maxAttempts: 3,
+          hintTexts: ["ย้อนกลับไปอ่านหัวข้อ “ของหนักตกเร็วกว่าจริงไหม” อีกครั้ง"],
+          skillWeights: { "SCI.CONCEPT_FORCE_MOTION": 1 },
+          contentVersion: 1,
+          choices: [
+            { id: "a", label: "หนังสือถึงพื้นก่อนชัดเจน เพราะหนักกว่า" },
+            { id: "b", label: "ทั้งสองถึงพื้นพร้อมกันหรือใกล้เคียงกันมาก" },
+            { id: "c", label: "ยางลบถึงพื้นก่อน เพราะเบากว่าจึงเร็วกว่า" },
+            { id: "d", label: "ยางลบลอยค้างอยู่กลางอากาศ" },
+          ],
+          correctChoiceId: "b",
+          explanation:
+            "ความหนักไม่ได้ทำให้ตกเร็วกว่า ของสองอย่างที่รูปร่างไม่ต่างกันมากจะถึงพื้นพร้อมกัน",
+        },
+        {
+          id: "d03b1231-63dd-5124-9bee-56f3d51e304a",
+          type: "mcq",
+          prompt: "กระดาษแผ่นแบนตกช้ากว่ากระดาษแผ่นเดิมที่ขยำเป็นก้อน เพราะอะไร",
+          difficulty: 3,
+          difficultyWeight: 1.25,
+          maxAttempts: 3,
+          hintTexts: [
+            "กระดาษสองอันนี้หนักเท่ากันไหม",
+            "อะไรที่เปลี่ยนไประหว่างแผ่นแบนกับก้อนขยำ",
+          ],
+          skillWeights: { "SCI.EXPLAIN_EVIDENCE": 0.5, "SCI.CONCEPT_FORCE_MOTION": 0.5 },
+          contentVersion: 1,
+          choices: [
+            { id: "a", label: "เพราะแผ่นแบนเบากว่าก้อนขยำ" },
+            { id: "b", label: "เพราะแรงโน้มถ่วงดึงแผ่นแบนน้อยกว่า" },
+            { id: "c", label: "เพราะแผ่นแบนปะทะอากาศมากกว่า อากาศจึงต้านไว้มากกว่า" },
+            { id: "d", label: "เพราะกระดาษก้อนแข็งกว่า" },
+          ],
+          correctChoiceId: "c",
+          explanation:
+            "กระดาษสองอันหนักเท่ากันเป๊ะ สิ่งเดียวที่เปลี่ยนคือรูปร่าง แผ่นแบนปะทะอากาศมากกว่าจึงถูกต้านมากกว่า",
+        },
+        {
+          id: "d5fd7582-2047-5964-941f-ddc24f671ed0",
+          type: "ordering",
+          prompt: "เรียงขั้นตอนการทดสอบ “ของหนักตกเร็วกว่าจริงไหม” ให้เป็นการทดลองที่ยุติธรรม",
+          difficulty: 2,
+          difficultyWeight: 1.0,
+          maxAttempts: 3,
+          hintTexts: ["การทดลองที่ยุติธรรมต้องเริ่มจากทำให้ทุกอย่างเหมือนกันก่อน"],
+          skillWeights: { "CT.DECOMPOSE_SEQUENCE": 0.6, "SCI.HYPOTHESIS": 0.4 },
+          contentVersion: 1,
+          options: [
+            { id: "guess", label: "เขียนคำทำนายของหนูไว้ก่อนว่าอะไรจะถึงพื้นก่อน" },
+            { id: "same-height", label: "ถือของทั้งสองอย่างให้สูงเท่ากัน" },
+            { id: "release", label: "ปล่อยมือพร้อมกันทั้งสองข้าง" },
+            { id: "repeat", label: "ทำซ้ำอีก 2 ครั้ง แล้วดูว่าผลเหมือนเดิมไหม" },
+          ],
+          correctOrder: ["guess", "same-height", "release", "repeat"],
+          explanation:
+            "เขียนคำทำนายก่อน เพื่อไม่ให้หลอกตัวเองตอนเห็นผล แล้วคุมความสูงให้เท่ากัน ปล่อยพร้อมกัน และทำซ้ำเพื่อให้แน่ใจว่าไม่ใช่ความบังเอิญ",
+        },
+        {
+          id: "f8576d98-682a-5be3-80e5-dbc058fe595f",
+          type: "numeric",
+          prompt:
+            "ทดลองปล่อยของ 3 ครั้ง ครั้งที่ 1 ถึงพื้นพร้อมกัน ครั้งที่ 2 พร้อมกัน ครั้งที่ 3 พร้อมกัน มีกี่ครั้งที่ผลตรงกับ “ของหนักถึงพื้นก่อน”",
+          difficulty: 1,
+          difficultyWeight: 0.8,
+          maxAttempts: 3,
+          hintTexts: ["อ่านผลทั้งสามครั้งอีกที แล้วนับเฉพาะครั้งที่ของหนักถึงก่อน"],
+          skillWeights: { "MATH.QUANT_REASONING": 0.5, "SCI.OBSERVE": 0.5 },
+          contentVersion: 1,
+          correctValue: 0,
+          tolerance: 0,
+          unit: "ครั้ง",
+          explanation: "ทั้งสามครั้งถึงพื้นพร้อมกัน จึงไม่มีสักครั้งที่ของหนักถึงก่อน",
+        },
+        {
+          id: "d1df88e1-9edc-5dc3-a2a9-db3732b16773",
+          type: "short_text",
+          prompt:
+            "ก่อนทดลอง หนูคิดว่าอะไรจะถึงพื้นก่อน และหลังทดลองผลออกมาเป็นอย่างไร ถ้าต่างจากที่คิดไว้ ให้บอกว่าหนูเปลี่ยนความคิดตรงไหน",
+          difficulty: 2,
+          difficultyWeight: 1.0,
+          maxAttempts: 3,
+          hintTexts: ["เขียนสองส่วน: ตอนแรกคิดว่าอะไร แล้วตอนนี้คิดว่าอะไร"],
+          skillWeights: { "SCI.HYPOTHESIS": 0.6, "COMM.SCI_WRITING": 0.4 },
+          contentVersion: 1,
+          rubricCode: "SCI_CER_SHORT",
+          successCriteria: ["บอกคำทำนายตอนแรกของหนู", "บอกผลที่เกิดขึ้นจริง"],
+          minChars: 25,
+        },
+        {
+          id: "d20d21ef-a4ab-5366-96bb-83776adff08a",
+          type: "long_text",
+          prompt:
+            "ชิ้นงานประจำหน่วย: เขียนอธิบายให้เพื่อนที่ยังเชื่อว่า “ของหนักตกเร็วกว่าเสมอ” ฟัง ใช้สิ่งที่หนูสังเกตเห็นเป็นหลักฐาน และอธิบายว่ากระดาษที่ตกช้าเป็นเพราะอะไร",
+          difficulty: 3,
+          difficultyWeight: 1.25,
+          maxAttempts: 3,
+          hintTexts: [
+            "โครงที่ใช้ได้: ฉันคิดว่า… เพราะฉันเห็นว่า… ซึ่งแปลว่า…",
+            "อย่าลืมอธิบายเรื่องกระดาษแผ่นแบนกับกระดาษก้อน",
+          ],
+          skillWeights: {
+            "SCI.EXPLAIN_EVIDENCE": 0.5,
+            "COMM.SCI_WRITING": 0.3,
+            "SCI.CONCEPT_FORCE_MOTION": 0.2,
+          },
+          contentVersion: 1,
+          rubricCode: "SCI_CER_LONG",
+          successCriteria: [
+            "บอกข้อสรุปของหนูให้ชัด",
+            "ยกหลักฐานจากสิ่งที่สังเกตเห็นจริง",
+            "อธิบายว่าทำไมกระดาษแผ่นแบนถึงตกช้ากว่า",
+          ],
+          minChars: 100,
+        },
+      ],
+    },
+  ],
+};

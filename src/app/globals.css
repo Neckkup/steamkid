@@ -1,26 +1,104 @@
 @import "tailwindcss";
 
+/**
+ * The design tokens for a product whose users are nine to twelve years old.
+ *
+ * Decisions worth defending:
+ *
+ *  - **Base font is 18px, not 16.** Thai script carries its tone marks above
+ *    and below the line; at 16px on a phone the marks that distinguish words
+ *    start to collapse into each other.
+ *  - **No red for a wrong answer.** `--color-notyet` is warm amber. PRO-6's
+ *    quality bar says a wrong answer tells a child what to try next, and a red
+ *    cross says something about the child instead.
+ *  - **48px minimum touch target**, from the `.tap` utility. Children's aim is
+ *    worse than adults' and the cost of a mis-tap mid-answer is high.
+ *  - **Light scheme only for now.** The previous file flipped to dark via
+ *    `prefers-color-scheme` while every surface colour stayed light, which
+ *    produced unreadable pages on any device with dark mode on. One scheme done
+ *    properly beats two done by accident; a real dark theme is its own task.
+ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f7f9fc;
+  --surface: #ffffff;
+  --foreground: #14213d;
+  --muted: #5a6784;
+  --border: #dbe3ef;
+
+  /* Actions and identity. */
+  --brand: #2f5fe0;
+  --brand-strong: #1e42a8;
+  --brand-soft: #e8efff;
+
+  /* Outcomes. Encouraging, never punitive. */
+  --correct: #0f7b52;
+  --correct-soft: #e2f6ec;
+  --notyet: #a35a00;
+  --notyet-soft: #fff2dc;
+  --waiting: #6b4ea8;
+  --waiting-soft: #f1ebff;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-muted: var(--muted);
+  --color-line: var(--border);
+
+  --color-brand: var(--brand);
+  --color-brand-strong: var(--brand-strong);
+  --color-brand-soft: var(--brand-soft);
+
+  --color-correct: var(--correct);
+  --color-correct-soft: var(--correct-soft);
+  --color-notyet: var(--notyet);
+  --color-notyet-soft: var(--notyet-soft);
+  --color-waiting: var(--waiting);
+  --color-waiting-soft: var(--waiting-soft);
+
+  --font-sans: var(--font-thai), var(--font-geist-sans), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  font-size: 18px;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  /* Thai needs the extra leading; at 1.5 the tone marks touch the line above. */
+  line-height: 1.75;
+}
+
+/* Every interactive element a child touches. 48px is the floor, not the target. */
+@utility tap {
+  min-height: 3rem;
+  min-width: 3rem;
+}
+
+/*
+ * A visible focus ring on every control, including for mouse users. Children
+ * navigate with whatever is in front of them, and a keyboard-only ring is a
+ * ring most of them never see.
+ */
+@layer base {
+  :focus-visible {
+    outline: 3px solid var(--brand);
+    outline-offset: 2px;
+    border-radius: 0.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
