@@ -16,6 +16,7 @@
  */
 import { callModel } from "@/lib/ai/client";
 import { langfuseEnvironment } from "@/lib/env";
+import { uuidv7 } from "@/lib/ids";
 import { getLangfuse } from "@/lib/observability/langfuse";
 import { PRICING_VERSION } from "@/lib/ai/models";
 
@@ -37,12 +38,21 @@ async function main() {
 
   console.log(`environment: ${langfuseEnvironment}   pricing: ${PRICING_VERSION}`);
 
+  // The browser mints these before the action that triggers the call; here the
+  // script stands in for it. They are checked against `result.traceId` below —
+  // that check is the canary for data-schema §5, because an `ai_verdict` row
+  // can only be written when the trace id *is* the correlation id.
+  const correlationId = uuidv7();
+  const sessionId = uuidv7();
+
   const result = await callModel({
     promptName: "ops/observability-smoke",
     traceName: "ops.observability-smoke",
     // A pseudonymous id, exactly as a real feature must pass it. No name, no
     // email, no auth subject.
     learnerRef: "learner_smoke_0001",
+    correlationId,
+    sessionId,
     tags: ["smoke"],
     variables: { learnerText: HOSTILE_LEARNER_TEXT },
     outputSchema: {
@@ -66,6 +76,8 @@ async function main() {
     [
       "",
       `trace id     ${result.traceId}`,
+      `correlation  ${correlationId}`,
+      `session      ${sessionId}`,
       `trace url    ${result.traceUrl ?? "(set LANGFUSE_BASEURL to get a link)"}`,
       `prompt       ${result.promptName} v${result.promptVersion} (${result.promptSource})`,
       `model        ${result.model}`,
@@ -83,6 +95,15 @@ async function main() {
     ].join("\n"),
   );
 
+  if (result.traceId !== correlationId) {
+    console.error(
+      `FAIL: the trace id (${result.traceId}) is not the correlation id we minted\n` +
+        `(${correlationId}). data-schema §5 forbids a Langfuse-generated id, and\n` +
+        `app.ai_verdict CHECKs that langfuse_trace_id = correlation_id, so a verdict\n` +
+        `from this call could not be stored.`,
+    );
+    process.exit(1);
+  }
   if (result.promptSource === "fallback") {
     console.warn(
       "WARNING: the in-repo fallback prompt served this call — Langfuse prompt\n" +

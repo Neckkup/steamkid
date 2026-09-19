@@ -91,6 +91,13 @@ export interface CallModelOptions {
   traceName?: string;
   /** Pseudonymous learner id — never an email, a name, or an auth subject. */
   learnerRef?: string;
+  /**
+   * Client-minted `correlation_id`, used as the Langfuse trace id. Required
+   * whenever `learnerRef` is set — see `resolveTraceIdentity`.
+   */
+  correlationId?: string;
+  /** `events.session.id`, so a sitting reads as one Langfuse session. */
+  sessionId?: string;
   metadata?: TraceMetadata;
   tags?: string[];
   /**
@@ -145,6 +152,8 @@ export async function callModel(options: CallModelOptions): Promise<CallModelRes
     {
       name: traceName,
       learnerRef: options.learnerRef,
+      correlationId: options.correlationId,
+      sessionId: options.sessionId,
       metadata,
       tags: options.tags,
       input: options.traceInput ?? referenceOnly("prompt-variables", prompt.definition.name),

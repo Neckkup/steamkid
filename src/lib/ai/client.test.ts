@@ -15,6 +15,10 @@ import { startFakeIngestion, type FakeIngestion } from "@/lib/observability/fake
 const LEARNER_TEXT =
   "Photosynthesis is how plants eat. My name is Nong Kong and I go to Wat Bowon School.";
 
+/** Client-minted ids, as a real feature receives them from the browser. */
+const CORRELATION_ID = "0199a3f1-8c42-7c19-9b7e-4a1f2d3e5c60";
+const SESSION_ID = "0199a3f1-7b10-7aa4-8f31-9c2b6d4e1a07";
+
 const requests: Record<string, unknown>[] = [];
 
 /** Overridable per test, so a safety block or a thinking-heavy call is testable. */
@@ -83,6 +87,11 @@ async function runSmokePrompt(overrides: Record<string, unknown> = {}) {
   return callModel({
     promptName: "ops/observability-smoke",
     learnerRef: "learner_7f3a91",
+    // A learner-bound call must carry the client-minted correlation id, which
+    // becomes the trace id (data-schema §5). `callModel` only passes it
+    // through; `resolveTraceIdentity` is where it is enforced.
+    correlationId: CORRELATION_ID,
+    sessionId: SESSION_ID,
     variables: { learnerText: LEARNER_TEXT },
     ...overrides,
   });
@@ -112,11 +121,11 @@ describe("callModel", () => {
     const updated = ingestion.events.find((event) => event.type === "generation-update")!
       .body as { usageDetails?: Record<string, number>; costDetails?: Record<string, number> };
 
-    expect(created.model).toBe("gemini-2.5-flash-lite");
+    expect(created.model).toBe("gemini-3.1-flash-lite");
     expect(created.modelParameters).toMatchObject({ maxTokens: 256 });
     expect(updated.usageDetails).toMatchObject({ input: 412, output: 24, total: 436 });
-    // gemini-2.5-flash-lite: $0.10/1M in, $0.40/1M out.
-    expect(updated.costDetails?.total).toBeCloseTo((412 * 0.1) / 1e6 + (24 * 0.4) / 1e6, 12);
+    // gemini-3.1-flash-lite: $0.25/1M in, $1.50/1M out.
+    expect(updated.costDetails?.total).toBeCloseTo((412 * 0.25) / 1e6 + (24 * 1.5) / 1e6, 12);
     expect(result.cost?.total).toBeCloseTo(updated.costDetails!.total, 12);
   });
 
@@ -144,7 +153,7 @@ describe("callModel", () => {
       cachedInputTokens: 400,
     });
     expect(result.cost?.total).toBeCloseTo(
-      (600 * 0.1) / 1e6 + (100 * 0.4) / 1e6 + (900 * 0.4) / 1e6 + (400 * 0.01) / 1e6,
+      (600 * 0.25) / 1e6 + (100 * 1.5) / 1e6 + (900 * 1.5) / 1e6 + (400 * 0.025) / 1e6,
       12,
     );
 
@@ -174,7 +183,7 @@ describe("callModel", () => {
       promptName: "ops/observability-smoke",
       promptSource: "fallback",
       promptLabel: "production",
-      model: "gemini-2.5-flash-lite",
+      model: "gemini-3.1-flash-lite",
     });
   });
 
@@ -182,8 +191,10 @@ describe("callModel", () => {
     const result = await runSmokePrompt();
 
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
-    expect(result.traceId).toBeTruthy();
-    expect(result.traceUrl).toBe(`${ingestion.baseUrl}/trace/${result.traceId}`);
+    // The link points at the correlation id, which is the same id the verdict
+    // row and the behaviour events carry — one key opens all three.
+    expect(result.traceId).toBe(CORRELATION_ID);
+    expect(result.traceUrl).toBe(`${ingestion.baseUrl}/trace/${CORRELATION_ID}`);
   });
 
   it("marks the run as fallback-served when Langfuse has no such prompt", async () => {
@@ -228,10 +239,11 @@ describe("callModel", () => {
   it("translates the prompt's effort into this model's thinking control", async () => {
     await runSmokePrompt();
 
-    // The canary runs on a 2.5 model, which takes a token budget rather than a
-    // thinking level. Sending the wrong one is a 400 mid-grade.
+    // The canary runs on a 3.x model, which takes a coarse thinking level
+    // rather than a token budget. Sending the wrong one is a 400 mid-grade.
+    // `thinkingSettings` covers the 2.5-family budget path in models.test.ts.
     expect((requests[0].config as Record<string, unknown>).thinkingConfig).toEqual({
-      thinkingBudget: 0,
+      thinkingLevel: "MINIMAL",
     });
   });
 
@@ -264,7 +276,7 @@ describe("callModel", () => {
     // A blocked grade still burned tokens and still cost money. Dropping them
     // would under-report spend on precisely the prompts that need fixing.
     expect(updated.usageDetails).toMatchObject({ input: 412, output: 0 });
-    expect(updated.costDetails?.total).toBeCloseTo((412 * 0.1) / 1e6, 12);
+    expect(updated.costDetails?.total).toBeCloseTo((412 * 0.25) / 1e6, 12);
   });
 
   it("lets a caller opt in to recording content on the trace", async () => {

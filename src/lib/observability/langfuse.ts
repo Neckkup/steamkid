@@ -1,6 +1,7 @@
 import { Langfuse } from "langfuse";
 
 import { env, isLangfuseConfigured, langfuseEnvironment } from "@/lib/env";
+import { UUID_PATTERN } from "@/lib/events/payload-schema";
 import { pickAllowed, redactDeep } from "@/lib/privacy/redact";
 
 /**
@@ -20,10 +21,27 @@ let client: Langfuse | null = null;
 export function getLangfuse(): Langfuse | null {
   if (!isLangfuseConfigured) return null;
   if (client) return client;
+
+  // `isLangfuseConfigured` already covers this. Asserted again, here, because
+  // this is the single line in the codebase where an undefined base URL stops
+  // being a config gap and becomes an egress decision: `new Langfuse({ baseUrl:
+  // undefined })` does not throw and does not disable itself, it points at
+  // `https://cloud.langfuse.com`. Anyone who later loosens the predicate above
+  // for a good-looking reason should hit this instead of shipping a child's
+  // trace to a vendor.
+  const baseUrl = env.LANGFUSE_BASEURL;
+  if (!baseUrl) {
+    throw new Error(
+      "Refusing to construct a Langfuse client without an explicit baseUrl: the " +
+        "SDK would fall back to cloud.langfuse.com. Set LANGFUSE_BASEURL to our " +
+        "self-hosted instance (docs/adr/0002-observability-and-privacy.md).",
+    );
+  }
+
   client = new Langfuse({
     publicKey: env.LANGFUSE_PUBLIC_KEY!,
     secretKey: env.LANGFUSE_SECRET_KEY!,
-    baseUrl: env.LANGFUSE_BASEURL,
+    baseUrl,
     // Every trace carries the tier so preview noise never pollutes production
     // dashboards or the eventual training-data selection queries.
     release: env.APP_ENV,
@@ -191,6 +209,31 @@ export interface AiCallOptions {
   /** Trace name, e.g. `grade.short-answer`. Keep it stable — dashboards group on it. */
   name: string;
   /**
+   * **The client-minted `correlation_id`, used verbatim as the Langfuse trace id.**
+   *
+   * `data-schema` §5 forbids a Langfuse-generated trace id and states the
+   * obligation as an equality: `app.ai_verdict.langfuse_trace_id ==
+   * correlation_id`. The database says the same thing as a CHECK
+   * (`ai_verdict_trace_is_correlation`), so a Langfuse-assigned id does not
+   * produce a slightly-worse trace — it produces a verdict row Postgres
+   * refuses.
+   *
+   * The id is minted by the browser before the action that leads to the call
+   * and travels on the behaviour events (`events.behavior_event.correlation_id`),
+   * which is what makes "what did the child do in the minute before the AI
+   * graded this" a single-key join instead of a timestamp guess.
+   */
+  correlationId?: string;
+  /**
+   * `events.session.id` — sent as the Langfuse `sessionId`.
+   *
+   * Groups every AI call a child met in one sitting into one Langfuse session
+   * view, which is the view you actually want open when asking why a lesson
+   * went badly: the grading, the feedback and the path choice in order, not
+   * three traces found separately by timestamp.
+   */
+  sessionId?: string;
+  /**
    * **`app.learner.public_ref` — never `app.learner.id`.**
    *
    * `data-schema` decision 2 makes `public_ref` the only identifier allowed to
@@ -213,6 +256,86 @@ export interface AiCallOptions {
   tags?: string[];
 }
 
+/**
+ * The *same* pattern the ingest gate applies to `correlation_id` and
+ * `session_id`, not a second opinion about what a UUID looks like: these two
+ * ends have to agree about one value that was minted in a third place.
+ *
+ * Lowercase-only matters even though Postgres is case-insensitive about
+ * `uuid`. An id that reaches Langfuse as `A1B2…` and is stored as `a1b2…` is
+ * one value in two spellings, and anything comparing them as strings — a trace
+ * URL, a dashboard filter, a join written in a notebook rather than in SQL —
+ * quietly finds nothing.
+ */
+const CANONICAL_UUID = new RegExp(UUID_PATTERN);
+
+/**
+ * A call that cannot be identified the way `data-schema` §5 requires.
+ *
+ * Its own type so a caller can tell a wiring mistake apart from a model or
+ * transport failure — this one is never worth retrying.
+ */
+export class TraceIdentityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TraceIdentityError";
+  }
+}
+
+/**
+ * Resolve the two identifying fields, or refuse the call.
+ *
+ * **This throws in every environment, unlike the metadata allow-list, and the
+ * difference is deliberate.** A dropped metadata key costs a dashboard column;
+ * a wrong trace id costs the verdict itself — `ai_verdict.langfuse_trace_id`
+ * is a `uuid NOT NULL` with a CHECK that it equals `correlation_id`, so a call
+ * made without a usable id produces a result that cannot be stored at all.
+ * Failing here is also the cheap moment to fail: it happens before the model
+ * request, so nothing is half-done and no tokens are spent.
+ *
+ * The rule is "required as soon as the call is bound to a child". A call with a
+ * `learnerRef` is a call whose verdict gets written and later joined back to
+ * that child's behaviour; a call without one (a dataset run, an eval, a
+ * warm-up) has nothing to join to and keeps working unchanged.
+ *
+ * `sessionId` stays optional even with a `learnerRef`: grading replayed from a
+ * dataset or a backfill legitimately has no `events.session` row behind it, and
+ * inventing one to satisfy a check would be worse than leaving the field empty.
+ */
+export function resolveTraceIdentity(options: AiCallOptions): {
+  correlationId?: string;
+  sessionId?: string;
+} {
+  const { correlationId, sessionId, learnerRef, name } = options;
+
+  if (correlationId === undefined && learnerRef !== undefined) {
+    throw new TraceIdentityError(
+      `traceAiCall(${name}) has a learnerRef but no correlationId. A call bound to ` +
+        `a child must carry the client-minted correlation_id: data-schema §5 makes ` +
+        `it the trace id, and app.ai_verdict CHECKs that the two are equal.`,
+    );
+  }
+
+  if (correlationId !== undefined && !CANONICAL_UUID.test(correlationId)) {
+    throw new TraceIdentityError(
+      `traceAiCall(${name}) got a correlationId that is not a lowercase UUID: ` +
+        `${JSON.stringify(correlationId)}. It is sent to Langfuse as the trace id ` +
+        `verbatim, so an off-format value does not fail — it produces a trace that ` +
+        `no longer matches the correlation_id on the events or the verdict row.`,
+    );
+  }
+
+  if (sessionId !== undefined && !CANONICAL_UUID.test(sessionId)) {
+    throw new TraceIdentityError(
+      `traceAiCall(${name}) got a sessionId that is not a lowercase UUID: ` +
+        `${JSON.stringify(sessionId)}. It must be events.session.id, or the ` +
+        `Langfuse session view groups traces under an id no table contains.`,
+    );
+  }
+
+  return { correlationId, sessionId };
+}
+
 export interface AiCallResult<T> {
   output: T;
   /** Optional token/cost usage to attach to the generation. */
@@ -230,14 +353,27 @@ export async function traceAiCall<T>(
   options: AiCallOptions,
   fn: (ctx: { traceId: string | null }) => Promise<AiCallResult<T>>,
 ): Promise<T> {
+  // Before the model call and before the Langfuse check, so a bare local
+  // checkout catches a mis-wired call at the same moment production would.
+  const identity = resolveTraceIdentity(options);
   const langfuse = getLangfuse();
 
   if (!langfuse) {
-    const result = await fn({ traceId: null });
+    // Still the caller's id, not null: there is only ever one id for this call,
+    // and handing it back lets an unconfigured local checkout write an
+    // ai_verdict row that satisfies the CHECK. The trace it names does not
+    // exist yet — `assertObservabilityReady()` is what keeps that a local-only
+    // state.
+    const result = await fn({ traceId: identity.correlationId ?? null });
     return result.output;
   }
 
   const trace = langfuse.trace({
+    // Passing `id` is what makes Langfuse adopt our id instead of minting its
+    // own. Read the id back from `trace.id` below all the same, so there is one
+    // source of truth for what the SDK actually used.
+    id: identity.correlationId,
+    sessionId: identity.sessionId,
     name: options.name,
     userId: options.learnerRef,
     tags: options.tags,

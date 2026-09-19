@@ -12,6 +12,7 @@ import { startFakeIngestion, type FakeIngestion } from "@/lib/observability/fake
 
 let ingestion: FakeIngestion;
 let traceAiCall: typeof import("@/lib/observability/langfuse").traceAiCall;
+let TraceIdentityError: typeof import("@/lib/observability/langfuse").TraceIdentityError;
 
 beforeAll(async () => {
   ingestion = await startFakeIngestion();
@@ -24,7 +25,7 @@ beforeAll(async () => {
   // env.ts reads process.env at module load, so the stubs must be in place
   // before the module graph is built.
   vi.resetModules();
-  ({ traceAiCall } = await import("@/lib/observability/langfuse"));
+  ({ traceAiCall, TraceIdentityError } = await import("@/lib/observability/langfuse"));
 });
 
 afterAll(async () => {
@@ -54,13 +55,21 @@ function traceCreateBody() {
   const event = traceEvents().find(
     (candidate) => (candidate.body as { name?: string }).name !== undefined,
   );
-  return event!.body as { metadata?: Record<string, unknown> };
+  return event!.body as {
+    id?: string;
+    sessionId?: string;
+    metadata?: Record<string, unknown>;
+  };
 }
+
+/** A client-minted uuidv7, of the shape `events.behavior_event.correlation_id` holds. */
+const CORRELATION_ID = "0199a3f1-8c42-7c19-9b7e-4a1f2d3e5c60";
+const SESSION_ID = "0199a3f1-7b10-7aa4-8f31-9c2b6d4e1a07";
 
 describe("traceAiCall wire payload", () => {
   it("sends a trace with the pseudonymous learner ref as userId", async () => {
     await traceAiCall(
-      { name: "grade.short-answer", learnerRef: "learner_7f3a91" },
+      { name: "grade.short-answer", learnerRef: "learner_7f3a91", correlationId: CORRELATION_ID },
       async () => ({ output: { score: 3 } }),
     );
 
@@ -220,6 +229,108 @@ describe("traceAiCall wire payload", () => {
     // resolves. This is the property that makes "every AI call is traced" true
     // on Vercel rather than true in principle.
     expect(traceEvents().length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * `data-schema` §5, the two rows PRO-15 did not close.
+ *
+ * The question these answer is not "did we set a field" but "is the id on the
+ * wire the one the client minted", because everything downstream — the
+ * `ai_verdict` CHECK, the behaviour join, the session view — is an equality
+ * between two values that were produced in different processes.
+ */
+describe("trace identity on the wire", () => {
+  it("uses the caller's correlation id as the trace id, not one Langfuse invented", async () => {
+    const seen: (string | null)[] = [];
+
+    await traceAiCall(
+      {
+        name: "grade.short-answer",
+        learnerRef: "learner_7f3a91",
+        correlationId: CORRELATION_ID,
+        sessionId: SESSION_ID,
+      },
+      async (ctx) => {
+        seen.push(ctx.traceId);
+        return { output: "ok" };
+      },
+    );
+
+    const body = traceCreateBody();
+    expect(body.id).toBe(CORRELATION_ID);
+    expect(body.sessionId).toBe(SESSION_ID);
+    // The same value the caller will write to app.ai_verdict.langfuse_trace_id,
+    // where a CHECK insists it equals correlation_id.
+    expect(seen).toEqual([CORRELATION_ID]);
+  });
+
+  it("keeps every trace event of the call under that one id", async () => {
+    // The create and the update are separate ingestion events. If only the
+    // create carried our id, the update would land on a trace that does not
+    // exist and the duration/usage would be lost.
+    await traceAiCall(
+      { name: "grade.short-answer", correlationId: CORRELATION_ID },
+      async () => ({ output: "ok", usage: { total: 12 } }),
+    );
+
+    const ids = traceEvents().map((event) => (event.body as { id?: string }).id);
+    expect(ids.length).toBeGreaterThan(1);
+    expect(new Set(ids)).toEqual(new Set([CORRELATION_ID]));
+  });
+
+  it("still works without an id for a call that belongs to no child", async () => {
+    // Dataset runs and evals have nothing to join back to. They keep the old
+    // behaviour: Langfuse mints the id.
+    await traceAiCall({ name: "eval.rubric-agreement" }, async () => ({ output: "ok" }));
+
+    expect(traceCreateBody().id).toBeTruthy();
+    expect(traceCreateBody().id).not.toBe(CORRELATION_ID);
+  });
+
+  it("refuses a learner-bound call that carries no correlation id", async () => {
+    let called = false;
+
+    await expect(
+      traceAiCall({ name: "grade.short-answer", learnerRef: "learner_7f3a91" }, async () => {
+        called = true;
+        return { output: "ok" };
+      }),
+    ).rejects.toThrow(TraceIdentityError);
+
+    // Refused before the model call: no tokens spent, and no half-finished
+    // grading to explain to anyone.
+    expect(called).toBe(false);
+    expect(traceEvents()).toHaveLength(0);
+  });
+
+  it("refuses an id that is not a canonical uuid instead of shipping it", async () => {
+    // The failure this prevents is silent: Langfuse accepts any string as a
+    // trace id, so `trace_2024` would produce a perfectly healthy-looking trace
+    // that no `uuid` column can ever point at.
+    await expect(
+      traceAiCall({ name: "grade.short-answer", correlationId: "trace_2024" }, async () => ({
+        output: "ok",
+      })),
+    ).rejects.toThrow(/correlationId/);
+
+    // Same value, wrong case. Postgres would store it lowercased, so the trace
+    // URL and the stored id would differ by exactly the bug nobody looks for.
+    await expect(
+      traceAiCall(
+        { name: "grade.short-answer", correlationId: CORRELATION_ID.toUpperCase() },
+        async () => ({ output: "ok" }),
+      ),
+    ).rejects.toThrow(/correlationId/);
+
+    await expect(
+      traceAiCall(
+        { name: "grade.short-answer", correlationId: CORRELATION_ID, sessionId: "session-42" },
+        async () => ({ output: "ok" }),
+      ),
+    ).rejects.toThrow(/sessionId/);
+
+    expect(traceEvents()).toHaveLength(0);
   });
 });
 
