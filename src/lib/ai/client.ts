@@ -12,13 +12,13 @@ import {
 } from "@/lib/ai/models";
 import { resolvePrompt, type ResolvedPrompt } from "@/lib/ai/prompts";
 import {
-  ALLOWED_TRACE_METADATA_KEYS,
+  allowedTraceMetadata,
   getLangfuse,
   traceAiCall,
   traceUrl,
   type TraceMetadata,
 } from "@/lib/observability/langfuse";
-import { pickAllowed, referenceOnly } from "@/lib/privacy/redact";
+import { referenceOnly } from "@/lib/privacy/redact";
 
 /**
  * The central LLM helper. Every AI feature calls the model through here.
@@ -170,10 +170,7 @@ export async function callModel(options: CallModelOptions): Promise<CallModelRes
         // this, a widget filtered to `feature = grading` returns an empty chart.
         // `promptSource` matters most here — a fallback-served call has no linked
         // prompt, so this is the only way to find it.
-        metadata: pickAllowed(
-          metadata as Record<string, unknown>,
-          ALLOWED_TRACE_METADATA_KEYS,
-        ),
+        metadata: allowedTraceMetadata(metadata),
         modelParameters: {
           maxTokens: prompt.config.maxTokens,
           ...(thinking ?? {}),

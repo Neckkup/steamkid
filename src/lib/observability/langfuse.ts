@@ -53,8 +53,43 @@ export function traceUrl(traceId: string | null): string | null {
 /**
  * Metadata we allow onto an external trace. Anything not on this list is
  * dropped before the payload is built — allow-list, not deny-list.
+ *
+ * **Key naming: camelCase on this surface, deliberately** (PRO-15 item 3).
+ *
+ * `data-schema` §5 writes the mandatory fields as `rubric_version`,
+ * `redaction_version`, `consent_scopes`, `grade_band`, because it is a SQL
+ * document and SQL is snake_case. The event registry is snake_case for the same
+ * reason — it is a JSON wire contract shared with the client.
+ *
+ * A Langfuse trace is a third surface with its own existing idiom: every native
+ * dimension the UI offers next to our metadata in the same filter bar is
+ * camelCase (`promptName`, `promptVersion`, `providedModelName`, `traceName` —
+ * see `OBSERVATION_DIMENSIONS` in `dashboards.ts`). Writing `prompt_name` into
+ * metadata would put it one row below Langfuse's own `promptName` in that
+ * dropdown, which is the exact two-standards-in-one-trace confusion this rule
+ * exists to prevent.
+ *
+ * So the rule is **one convention per surface, applied without exception**:
+ * Postgres snake_case, event wire snake_case, Langfuse camelCase. What the spec
+ * mandates is the *facts*, not the casing; the mapping is one-to-one and
+ * mechanical:
+ *
+ * | `data-schema` §5     | trace metadata key |
+ * | -------------------- | ------------------ |
+ * | `rubric_version`     | `rubricVersion`    |
+ * | `redaction_version`  | `redactionVersion` |
+ * | `consent_scopes`     | `consentScopes`    |
+ * | `grade_band`         | `gradeBand`        |
  */
 export const ALLOWED_TRACE_METADATA_KEYS = [
+  // Mandated on every trace by `data-schema` §5. Added in PRO-15: they were
+  // absent, and because this is an allow-list they were being dropped in
+  // silence — a trace that looked fine and did not carry what the spec requires.
+  "rubricVersion",
+  "redactionVersion",
+  "consentScopes",
+  "gradeBand",
+
   "lessonId",
   "exerciseId",
   "skillId",
@@ -77,16 +112,95 @@ export const ALLOWED_TRACE_METADATA_KEYS = [
   "promptSource",
 ] as const;
 
-export type TraceMetadata = Partial<
-  Record<(typeof ALLOWED_TRACE_METADATA_KEYS)[number], unknown>
->;
+export type AllowedTraceMetadataKey = (typeof ALLOWED_TRACE_METADATA_KEYS)[number];
+
+/** `app.learner.grade_band` — the only school-level detail allowed on a trace. */
+export type GradeBand = "p4" | "p5" | "p6";
+
+/**
+ * Typed rather than `Record<string, unknown>` so the four spec-mandated fields
+ * have a shape a caller cannot get subtly wrong — `consentScopes` in particular
+ * is a list, and shipping it as a comma-joined string would make every
+ * consent-scoped dashboard filter silently miss.
+ */
+export interface TraceMetadata {
+  /** `app.rubric_version.version`, as `"{rubric_code}@{version}"`. */
+  rubricVersion?: string;
+  /** Version of the redaction layer that produced the trace input. */
+  redactionVersion?: string;
+  /** Consent scopes in force when the call was made, e.g. `["ai_grading"]`. */
+  consentScopes?: string[];
+  gradeBand?: GradeBand;
+
+  lessonId?: string;
+  exerciseId?: string;
+  skillId?: string;
+  submissionId?: string;
+  attemptNumber?: number;
+  gradeVersion?: string;
+  promptName?: string;
+  promptVersion?: number;
+  model?: string;
+  locale?: string;
+  gradeLevel?: string;
+  feature?: string;
+  promptLabel?: string;
+  promptSource?: string;
+}
+
+// Compile-time guard: the allow-list and the interface must describe exactly the
+// same key set. Adding a field to one and forgetting the other is how a
+// spec-mandated value starts being dropped in silence again.
+type KeysMatch =
+  [AllowedTraceMetadataKey] extends [keyof TraceMetadata]
+    ? [keyof TraceMetadata] extends [AllowedTraceMetadataKey]
+      ? true
+      : never
+    : never;
+const _allowListMatchesInterface: KeysMatch = true;
+void _allowListMatchesInterface;
+
+/**
+ * Apply the allow-list, and refuse to do it quietly.
+ *
+ * TypeScript already rejects an unknown key in an object *literal*, but
+ * metadata assembled dynamically (spread from a request, built in a loop)
+ * bypasses that and used to vanish without a sound. Locally that is now a
+ * thrown error, so it surfaces while someone is writing the call; in a deployed
+ * environment it is a warning, because dropping a metadata key is never a good
+ * enough reason to fail a child's grading mid-request.
+ */
+export function allowedTraceMetadata(metadata: TraceMetadata): Record<string, unknown> {
+  const dropped = Object.keys(metadata).filter(
+    (key) => !(ALLOWED_TRACE_METADATA_KEYS as readonly string[]).includes(key),
+  );
+
+  if (dropped.length > 0) {
+    const message =
+      `Trace metadata dropped by the allow-list: ${dropped.join(", ")}. ` +
+      `Add the key to ALLOWED_TRACE_METADATA_KEYS (and TraceMetadata) if it is ` +
+      `safe to send to an external service, or stop passing it.`;
+    if (env.APP_ENV === "local") throw new Error(message);
+    console.warn(message);
+  }
+
+  return pickAllowed(metadata as Record<string, unknown>, ALLOWED_TRACE_METADATA_KEYS);
+}
 
 export interface AiCallOptions {
   /** Trace name, e.g. `grade.short-answer`. Keep it stable — dashboards group on it. */
   name: string;
   /**
-   * Pseudonymous learner id (the `learner_id` surrogate key, not a user email,
-   * not an auth provider subject). This is what makes per-child debugging
+   * **`app.learner.public_ref` — never `app.learner.id`.**
+   *
+   * `data-schema` decision 2 makes `public_ref` the only identifier allowed to
+   * leave our infrastructure, and names the primary key as the thing it must
+   * not be. The reason is recovery: a `public_ref` that ends up somewhere we
+   * regret can be rotated on its own, while the PK is wired into every foreign
+   * key in the database and cannot be. An id that has left the building cannot
+   * be called back, so this is a one-way mistake.
+   *
+   * Sent as the Langfuse `userId`, which is what makes per-child debugging
    * possible without shipping a child's identity to a vendor.
    */
   learnerRef?: string;
@@ -127,9 +241,7 @@ export async function traceAiCall<T>(
     name: options.name,
     userId: options.learnerRef,
     tags: options.tags,
-    metadata: options.metadata
-      ? pickAllowed(options.metadata as Record<string, unknown>, ALLOWED_TRACE_METADATA_KEYS)
-      : undefined,
+    metadata: options.metadata ? allowedTraceMetadata(options.metadata) : undefined,
     input: options.input === undefined ? undefined : redactDeep(options.input),
   });
 
