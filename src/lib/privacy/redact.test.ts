@@ -55,6 +55,58 @@ describe("scrubText", () => {
       expect(scrubText(answer), answer).toBe(answer);
     }
   });
+
+  // PRO-32: PRO-23 fixed space-separated digits, but two shapes a STEAM app
+  // produces routinely were still blanked, so a science/maths grading trace was
+  // still unreadable.
+  it("leaves science magnitudes and dashed arithmetic intact", () => {
+    const answers = [
+      // Case 1 — a contiguous 9+ digit run that carries a unit.
+      "the sun is 149600000 km away",
+      "light travels 299792458 m/s",
+      "Earth's circumference is 40075017 m",
+      "the star is 299792458000 m away",
+      "ดวงอาทิตย์อยู่ห่าง 149600000 กิโลเมตร",
+      // Case 1 — the same run inside arithmetic rather than next to a unit.
+      "299792458 × 2 = 599584916",
+      "123456789 + 1 = 123456790",
+      // Case 2 — subtraction written without spaces.
+      "1000-200-300 = 500",
+      "5000-1000-2000 = 2000",
+      // Previously-known false positive, fixed by the same narrowing.
+      "the launch was 01-15-2024",
+    ];
+    for (const answer of answers) {
+      expect(scrubText(answer), answer).toBe(answer);
+    }
+  });
+
+  // PRO-32 regression guard: the schoolwork exemption must not become a way to
+  // launder a real number through a lesson-shaped sentence.
+  it("never lets a phone number earn the schoolwork exemption", () => {
+    const leaks = [
+      // Leading 0 is a trunk prefix, so no context can rescue it.
+      "0812345678 km",
+      "0812345678 = my number",
+      "081-234-5678 = call me",
+      // Phone punctuation is not maths.
+      "+66 81 234 5678 km",
+      "(02) 123-4567 = home",
+      // A contact word in the phrase vetoes the exemption outright.
+      "call 812345678 m",
+      "โทร 812345678 กม",
+      "tel 123456789 + 1",
+      // A national id gets no exemption at all.
+      "1234567890123 km",
+      "1-2345-67890-12-3 = id",
+      // "in"/"dollars" are English words, not units.
+      "812345678 in the morning",
+      "812345678 dollars",
+    ];
+    for (const text of leaks) {
+      expect(scrubText(text), text).toContain(REDACTED);
+    }
+  });
 });
 
 describe("redactDeep", () => {
