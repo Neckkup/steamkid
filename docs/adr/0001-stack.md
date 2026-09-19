@@ -14,7 +14,7 @@
 | Database | Postgres | managed; provider in [ADR 0003](0003-managed-postgres-provider.md) |
 | ORM / migrations | Prisma with the `pg` driver adapter | 7.10 |
 | Auth | Auth.js (`next-auth` v5) + `@auth/prisma-adapter` | 5.0 beta |
-| AI provider | Anthropic (external API) | — |
+| AI provider | ~~Anthropic~~ → Gemini API, paid tier | superseded by [ADR 0004](0004-llm-provider-gemini.md) |
 | AI observability | Langfuse | see ADR 0002 |
 | Error tracking | Sentry | see ADR 0002 |
 | Tests | Vitest | 4 |
@@ -22,6 +22,14 @@
 | Deploy | Vercel, git-connected | — |
 
 One repository, one app. No monorepo, no separate API service.
+
+> **Superseded row — AI provider.** This ADR originally chose Anthropic. The
+> founder decided on 18 Sep 2026 to use the Gemini API instead; the reasoning,
+> the paid-tier requirement, the cost model, and the rejected alternatives are
+> in [ADR 0004](0004-llm-provider-gemini.md). The original choice is struck
+> through rather than deleted so the history stays readable. Nothing else in
+> this table changes — the provider swap ([PRO-28](/PRO/issues/PRO-28)) touched
+> the client, the rate card, and one env var, which is the point.
 
 ## Why
 
