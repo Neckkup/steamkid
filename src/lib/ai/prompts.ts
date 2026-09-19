@@ -2,7 +2,7 @@ import type { ApiChatMessage } from "langfuse";
 import { z } from "zod";
 
 import { getLangfuse } from "@/lib/observability/langfuse";
-import { DEFAULT_MODEL, isKnownModel, type ModelId } from "@/lib/ai/models";
+import { DEFAULT_MODEL, EFFORT_LEVELS, isKnownModel, type ModelId } from "@/lib/ai/models";
 
 /**
  * Prompts and rubrics live in Langfuse prompt management, not in this file.
@@ -36,7 +36,12 @@ export const PRODUCTION_LABEL = "production";
 export const promptConfigSchema = z.object({
   model: z.string().refine(isKnownModel, "unknown or unpriced model"),
   maxTokens: z.number().int().positive().max(64_000),
-  effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+  /**
+   * Reasoning effort. Omit it to keep the model's own default — that is not the
+   * same as asking for `minimal`, and `src/lib/ai/models.ts` translates it to
+   * whichever thinking control the chosen model actually accepts.
+   */
+  effort: z.enum(EFFORT_LEVELS).optional(),
 });
 
 export type PromptConfig = z.infer<typeof promptConfigSchema> & { model: ModelId };
@@ -80,10 +85,12 @@ export interface PromptDefinition {
 const OBSERVABILITY_SMOKE: PromptDefinition = {
   name: "ops/observability-smoke",
   feature: "ops",
-  config: { model: "claude-haiku-4-5", maxTokens: 256 },
+  // The cheapest registered model, with thinking off: the canary proves the
+  // pipeline, not the model's reasoning, and it runs on every deploy.
+  config: { model: "gemini-2.5-flash-lite", maxTokens: 256, effort: "minimal" },
   labels: [PRODUCTION_LABEL],
   tags: ["ops", "canary"],
-  commitMessage: "PRO-5: initial observability canary",
+  commitMessage: "PRO-27: observability canary on the Gemini API",
   messages: [
     {
       role: "system",

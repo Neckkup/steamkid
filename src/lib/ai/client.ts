@@ -1,9 +1,10 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI, type Content } from "@google/genai";
 
 import { env } from "@/lib/env";
 import {
   costDetails,
   costUsd,
+  thinkingSettings,
   usageDetails,
   type CostBreakdown,
   type ModelId,
@@ -22,6 +23,11 @@ import { pickAllowed, referenceOnly } from "@/lib/privacy/redact";
 /**
  * The central LLM helper. Every AI feature calls the model through here.
  *
+ * The provider is the Gemini API — see
+ * `docs/adr/0004-llm-provider-gemini.md`, which also records why we must stay
+ * on the paid tier: free-tier Gemini traffic is used to improve Google
+ * products, and children's answers are not training data for anyone but us.
+ *
  * What this buys us, enforced rather than documented:
  *
  * - **A trace, always.** `traceAiCall` wraps the call, and the generation
@@ -29,9 +35,9 @@ import { pickAllowed, referenceOnly } from "@/lib/privacy/redact";
  *   latency, and the error when there is one.
  * - **A prompt version.** The prompt comes from Langfuse prompt management, so
  *   "which prompt produced this score" is answerable months later.
- * - **A cost number at call time.** Cost is computed from real token counts and
- *   sent as `costDetails`, which is what makes cost-per-graded-item and
- *   cost-per-learner-per-month chartable.
+ * - **A cost number at call time.** Cost is computed from real token counts —
+ *   thinking tokens included — and sent as `costDetails`, which is what makes
+ *   cost-per-graded-item and cost-per-learner-per-month chartable.
  * - **No child identity on the wire.** The trace `userId` is a pseudonymous
  *   learner ref, trace metadata is an allow-list, and free-text defaults to a
  *   `referenceOnly()` pointer unless the caller explicitly opts in.
@@ -43,15 +49,34 @@ import { pickAllowed, referenceOnly } from "@/lib/privacy/redact";
 type LangfuseClient = NonNullable<ReturnType<typeof getLangfuse>>;
 type LangfusePromptArg = Parameters<LangfuseClient["generation"]>[0]["prompt"];
 
-let anthropic: Anthropic | null = null;
+let gemini: GoogleGenAI | null = null;
 
-function getAnthropic(): Anthropic {
-  if (anthropic) return anthropic;
-  if (!env.ANTHROPIC_API_KEY) {
-    throw new Error("ANTHROPIC_API_KEY is not configured; cannot call the model.");
+function getGemini(): GoogleGenAI {
+  if (gemini) return gemini;
+  if (!env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is not configured; cannot call the model.");
   }
-  anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
-  return anthropic;
+  gemini = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
+  return gemini;
+}
+
+/**
+ * The model refused to answer, or the prompt itself was blocked.
+ *
+ * Its own error type because a safety block on a children's product is an
+ * expected event that a feature may want to handle (show the child a kind
+ * message, flag the submission for a teacher) rather than a transport failure
+ * to retry. What it must never become is an empty verdict that looks like a
+ * grade of zero.
+ */
+export class ModelSafetyBlockError extends Error {
+  constructor(
+    readonly reason: string,
+    readonly stage: "prompt" | "response",
+  ) {
+    super(`Gemini blocked the ${stage} (${reason}).`);
+    this.name = "ModelSafetyBlockError";
+  }
 }
 
 export interface CallModelOptions {
@@ -125,7 +150,10 @@ export async function callModel(options: CallModelOptions): Promise<CallModelRes
       input: options.traceInput ?? referenceOnly("prompt-variables", prompt.definition.name),
     },
     async (ctx) => {
-      const { system, messages } = splitSystem(prompt.client.compile(options.variables ?? {}));
+      const { systemInstruction, contents } = toGeminiRequest(
+        prompt.client.compile(options.variables ?? {}),
+      );
+      const thinking = thinkingSettings(model, prompt.config.effort);
 
       const langfuse = getLangfuse();
       const startedAt = new Date();
@@ -148,7 +176,7 @@ export async function callModel(options: CallModelOptions): Promise<CallModelRes
         ),
         modelParameters: {
           maxTokens: prompt.config.maxTokens,
-          ...(prompt.config.effort ? { effort: prompt.config.effort } : {}),
+          ...(thinking ?? {}),
           structuredOutput: options.outputSchema ? "json_schema" : "none",
         },
         // Linking the Langfuse prompt object is what populates the
@@ -165,37 +193,67 @@ export async function callModel(options: CallModelOptions): Promise<CallModelRes
         startTime: startedAt,
       });
 
+      // Filled in as soon as the response is read, so the single terminal
+      // update below can carry tokens and cost even when the call ends by
+      // throwing. A safety-blocked grade still burned tokens, and a cost
+      // dashboard that drops them under-reports spend on exactly the prompts
+      // we most need to fix.
+      let billed: { usage: TokenUsage; cost: CostBreakdown | null; endTime: Date } | null = null;
+
       try {
-        const response = await getAnthropic().messages.create({
+        const response = await getGemini().models.generateContent({
           model,
-          max_tokens: prompt.config.maxTokens,
-          ...(system ? { system } : {}),
-          messages,
-          ...(options.outputSchema || prompt.config.effort
-            ? {
-                output_config: {
-                  ...(prompt.config.effort ? { effort: prompt.config.effort } : {}),
-                  ...(options.outputSchema
-                    ? { format: { type: "json_schema" as const, schema: options.outputSchema } }
-                    : {}),
-                },
-              }
-            : {}),
+          contents,
+          config: {
+            ...(systemInstruction ? { systemInstruction } : {}),
+            maxOutputTokens: prompt.config.maxTokens,
+            ...(thinking ? { thinkingConfig: thinking } : {}),
+            // Explicit context caching (`cachedContent`) is deliberately not
+            // used: it stores a child's prompt at rest on Google's side, which
+            // is the one thing that breaks the zero-retention posture in ADR
+            // 0004. Implicit in-memory caching is RAM-only and still priced.
+            ...(options.outputSchema
+              ? {
+                  responseMimeType: "application/json",
+                  responseJsonSchema: options.outputSchema,
+                }
+              : {}),
+          },
         });
 
         const finishedAt = new Date();
         const latencyMs = finishedAt.getTime() - startedAt.getTime();
+
+        const blockReason = response.promptFeedback?.blockReason;
+        if (blockReason) throw new ModelSafetyBlockError(String(blockReason), "prompt");
+
+        const meta = response.usageMetadata;
+        const cachedInputTokens = meta?.cachedContentTokenCount ?? 0;
         const usage: TokenUsage = {
-          inputTokens: response.usage.input_tokens,
-          outputTokens: response.usage.output_tokens,
-          cacheCreationTokens: response.usage.cache_creation_input_tokens ?? 0,
-          cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
+          // `promptTokenCount` includes the cached portion; billing does not
+          // charge that portion at the input rate, so it is subtracted here
+          // rather than double-counted.
+          inputTokens: Math.max((meta?.promptTokenCount ?? 0) - cachedInputTokens, 0),
+          outputTokens: meta?.candidatesTokenCount ?? 0,
+          reasoningTokens: meta?.thoughtsTokenCount ?? 0,
+          cachedInputTokens,
+          toolUseInputTokens: meta?.toolUsePromptTokenCount ?? 0,
         };
-        const cost = costUsd(model, usage);
-        const text = response.content
-          .filter((block): block is Anthropic.TextBlock => block.type === "text")
-          .map((block) => block.text)
-          .join("");
+        const cost = costUsd(model, usage, finishedAt);
+        const text = response.text ?? "";
+        const candidate = response.candidates?.[0];
+        const stopReason = candidate?.finishReason ? String(candidate.finishReason) : null;
+
+        billed = { usage, cost, endTime: finishedAt };
+
+        // A response cut off by the safety filter, or by the token ceiling
+        // mid-JSON, must not reach a grading caller looking like an answer.
+        // Checked before the update so a blocked call leaves one terminal
+        // observation marked ERROR, not a success-shaped update followed by a
+        // correction that only merge semantics reconcile.
+        if (stopReason === "SAFETY" || stopReason === "PROHIBITED_CONTENT") {
+          throw new ModelSafetyBlockError(stopReason, "response");
+        }
 
         generation?.update({
           endTime: finishedAt,
@@ -219,20 +277,25 @@ export async function callModel(options: CallModelOptions): Promise<CallModelRes
           usage,
           cost,
           latencyMs,
-          stopReason: response.stop_reason ?? null,
+          stopReason,
         };
 
         return {
           output: result,
           usage: {
             input: usage.inputTokens,
-            output: usage.outputTokens,
-            total: usage.inputTokens + usage.outputTokens,
+            // Thinking tokens are billed as output, so the trace-level usage
+            // summary counts them as output too. A grading call whose cost is
+            // mostly reasoning should not look cheap here.
+            output: usage.outputTokens + (usage.reasoningTokens ?? 0),
+            total: meta?.totalTokenCount ?? usage.inputTokens + usage.outputTokens,
           },
         };
       } catch (error) {
         generation?.update({
-          endTime: new Date(),
+          endTime: billed?.endTime ?? new Date(),
+          ...(billed ? { usageDetails: usageDetails(billed.usage) } : {}),
+          ...(billed?.cost ? { costDetails: costDetails(billed.cost) } : {}),
           level: "ERROR",
           statusMessage: error instanceof Error ? error.name : "unknown error",
         });
@@ -243,14 +306,15 @@ export async function callModel(options: CallModelOptions): Promise<CallModelRes
 }
 
 /**
- * Anthropic takes the system prompt as its own parameter, while a Langfuse chat
- * prompt stores it as a leading `system` message. Only leading system messages
- * are hoisted; one appearing later is a mid-conversation operator message and
- * is left in place.
+ * Gemini takes the system prompt as `systemInstruction` and the turns as
+ * `contents`, while a Langfuse chat prompt stores the system prompt as a
+ * leading `system` message. Only leading system messages are hoisted; one
+ * appearing later is a mid-conversation operator message and stays in place as
+ * a user turn, which is the closest Gemini equivalent.
  */
-function splitSystem(compiled: { role: string; content: string }[]): {
-  system?: string;
-  messages: Anthropic.MessageParam[];
+function toGeminiRequest(compiled: { role: string; content: string }[]): {
+  systemInstruction?: string;
+  contents: Content[];
 } {
   const leading: string[] = [];
   let index = 0;
@@ -259,12 +323,15 @@ function splitSystem(compiled: { role: string; content: string }[]): {
     index += 1;
   }
 
-  const messages = compiled.slice(index).map((message) => ({
-    role: message.role === "assistant" ? ("assistant" as const) : ("user" as const),
-    content: message.content,
+  const contents: Content[] = compiled.slice(index).map((message) => ({
+    role: message.role === "assistant" ? "model" : "user",
+    parts: [{ text: message.content }],
   }));
 
-  return { system: leading.length ? leading.join("\n\n") : undefined, messages };
+  return {
+    systemInstruction: leading.length ? leading.join("\n\n") : undefined,
+    contents,
+  };
 }
 
 /** Structured output is schema-constrained, but never trust it blindly. */

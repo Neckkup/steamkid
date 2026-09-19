@@ -69,8 +69,12 @@ async function main() {
       `trace url    ${result.traceUrl ?? "(set LANGFUSE_BASEURL to get a link)"}`,
       `prompt       ${result.promptName} v${result.promptVersion} (${result.promptSource})`,
       `model        ${result.model}`,
+      // Thinking tokens are printed separately because they bill at the output
+      // rate but are not inside `candidatesTokenCount` — a smoke run that hid
+      // them would under-report the cost it is meant to prove.
       `tokens       in ${result.usage.inputTokens} / out ${result.usage.outputTokens}` +
-        ` / cache-read ${result.usage.cacheReadTokens ?? 0}`,
+        ` / thinking ${result.usage.reasoningTokens ?? 0}` +
+        ` / cache-read ${result.usage.cachedInputTokens ?? 0}`,
       `cost         ${usd}`,
       `latency      ${result.latencyMs} ms`,
       `stop reason  ${result.stopReason}`,

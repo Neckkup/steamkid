@@ -91,7 +91,7 @@ they are never committed and never pasted into an issue comment.
 | `APP_ENV`, `APP_URL` | all deployed environments |
 | `DATABASE_URL`, `DIRECT_URL` | runtime + migrations |
 | `AUTH_SECRET` | runtime |
-| `ANTHROPIC_API_KEY` | server only |
+| `GEMINI_API_KEY` | server only (paid-tier auth key — see ADR 0004) |
 | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASEURL` | runtime |
 | `NEXT_PUBLIC_SENTRY_DSN` | runtime (public by design) |
 | `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` | build only, source-map upload |

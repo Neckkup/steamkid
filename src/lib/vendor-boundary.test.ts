@@ -50,3 +50,26 @@ describe("database vendor boundary (ADR 0003)", () => {
     expect(declaredDependencies).toContain("pg");
   });
 });
+
+describe("LLM provider boundary (ADR 0004)", () => {
+  it("calls Gemini through the official SDK", () => {
+    expect(declaredDependencies).toContain("@google/genai");
+  });
+
+  it("has no second LLM SDK in the tree", () => {
+    // One provider, reached through one helper. A second SDK in the tree is how
+    // a call path appears that `callModel` does not wrap — no trace, no prompt
+    // version, no cost — which ADR 0002 defines as an unfinished feature. If we
+    // ever genuinely need two providers, amend ADR 0004 and this list together.
+    const offenders = declaredDependencies.filter((name) =>
+      ["@anthropic-ai/sdk", "openai", "@mistralai/mistralai", "cohere-ai"].includes(name),
+    );
+
+    expect(
+      offenders,
+      "ADR 0004 picked the Gemini API as the single LLM provider. Adding a second " +
+        "SDK creates a model path outside src/lib/ai/client.ts, which is where the " +
+        "trace, the prompt version, the cost and the redaction live. Amend ADR 0004 first.",
+    ).toEqual([]);
+  });
+});

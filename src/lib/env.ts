@@ -40,8 +40,13 @@ const schema = z.object({
   /** Auth.js session secret. */
   AUTH_SECRET: blankAsUndefined(z.string().min(1)),
 
-  /** LLM provider key. Server-side only — never expose to the browser. */
-  ANTHROPIC_API_KEY: blankAsUndefined(z.string().min(1)),
+  /**
+   * Gemini API key (see `docs/adr/0004-llm-provider-gemini.md`). Server-side
+   * only — never expose to the browser. Must belong to a **billing-enabled**
+   * project: free-tier Gemini traffic is used to improve Google products, and a
+   * child's answer is not training data for anyone but us.
+   */
+  GEMINI_API_KEY: blankAsUndefined(z.string().min(1)),
 
   /** Langfuse. `LANGFUSE_BASEURL` points at our self-hosted instance. */
   LANGFUSE_PUBLIC_KEY: blankAsUndefined(z.string().min(1)),
