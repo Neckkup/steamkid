@@ -1,7 +1,9 @@
 # Runbook — Langfuse self-host
 
-- **Status:** spend approved (board approval `067a3826`, ≈USD 17/mo); waiting only
-  on a provisioned host
+- **Status:** **provisioned and answering** at `https://langfuse.homekup.com`,
+  reporting `4.37.0` — the v4+ requirement is met. **Not yet hardened:** as of
+  2026-09-19 `npm run langfuse:verify` exits 1 on two findings (see §3). No
+  learner trace may land in it until those clear.
 - **Owner:** CTO
 - **Issue:** PRO-12
 - **Why self-hosted at all:** `docs/adr/0002-observability-and-privacy.md`
@@ -15,11 +17,57 @@ reason we self-host is that our traces carry children's free-text answers.
 Target: **4 vCPU / 8 GB RAM / ≥80 GB disk**, Ubuntu LTS. ClickHouse is the reason
 for the 8 GB; it will not run comfortably under that.
 
-Recommended: Hetzner CPX31, EU region (≈USD 17/month). Any provider is acceptable
-if it meets the spec and the region is EU or Singapore — **not** a US region, for
-the same reason the data does not go to a US SaaS.
+Any provider is acceptable if it meets the spec and the region is EU or
+Singapore — **not** a US region, for the same reason the data does not go to a
+US SaaS.
 
-Record the provider, region, instance id, and monthly cost on PRO-12 when created.
+### Decision (2026-09-19): co-tenant with Supabase, not a dedicated VM
+
+**Decided:** Langfuse runs on the existing `homekup.com` box — the same machine
+that serves `supabase.homekup.com`. The founder chose this over a dedicated VM
+when asked directly (PRO-26), and it is already up.
+
+**Rejected alternative:** a dedicated Hetzner CPX31 in an EU region, ≈USD 17/mo,
+which was the original recommendation here and the one the earlier draft of this
+runbook assumed. It is cleaner — a compromise of the app database would not also
+hand over the trace store, and ClickHouse could not starve Postgres of page
+cache. It was rejected because it costs a second machine to administer and a
+second security-update surface, for a team of this size and an MVP with no real
+learner data in it yet.
+
+**This overrides the earlier "Postgres must not share a box with Langfuse"
+condition.** That condition was mine and it was about blast radius. The founder
+took the trade knowingly; recording it here so it is argued with rather than
+rediscovered.
+
+**Migration cost if we are wrong:** moving Langfuse to its own host later is a
+`docker compose down`, a volume copy (Postgres dump + ClickHouse data dir), a
+DNS change, and a re-issue of `LANGFUSE_*` keys. Hours, not days, and it does
+not touch app code — `LANGFUSE_BASEURL` is a single environment variable. The
+expensive version of being wrong is not the migration, it is a shared-host
+compromise reaching both stores at once, which is why §3 is not optional here.
+
+**Because it is a co-tenant, these are now load-bearing and are not in the
+dedicated-VM version of this procedure:**
+
+- **Memory.** ClickHouse will take what it is given. Set an explicit
+  `mem_limit` on the ClickHouse service in the compose file and leave Postgres
+  its existing headroom, or the first heavy trace query degrades Supabase.
+- **Disk.** Trace volume grows without asking. Alert on disk usage on this box,
+  and set a Langfuse data-retention policy — a full disk takes the app database
+  down with it, not just observability.
+- **Ports.** Nothing in the Langfuse compose stack may publish to the host's
+  public interface (§3.2). On a shared box the default `ports:` mappings can
+  also collide with what Supabase already binds; use the Docker network only.
+- **Backups.** The existing box's backup job was written for Supabase. Extend it
+  to the Langfuse volumes, or Langfuse is silently unprotected.
+
+### Open question — region
+
+The region of the `homekup.com` box is **still unanswered** (asked on PRO-26,
+not answered). The budget condition says EU or Singapore only. This does not
+block development traces, and it does block putting a real child's free-text
+answer on this instance. Get the answer before the first real learner trace.
 
 ## 2. Bring up the stack
 
@@ -51,13 +99,20 @@ Both failures are invisible from the ingest side. So this is enforced in code, n
 trusted to whoever is at the keyboard:
 
 ```bash
-npm run langfuse:verify   # reads GET /api/public/health, exits 1 on v3
+npm run langfuse:verify   # exits 1 on v3, and on an un-hardened instance
 ```
 
 Run it the moment the instance answers on HTTPS, and **before** any
 `langfuse:prompts --push`, `langfuse:dashboards --push`, or `ai:smoke`. The check
 lives in `src/lib/observability/langfuse-version.ts`; bumping
 `PINNED_LANGFUSE_TAG` there and the tag above is one deliberate edit, not a drift.
+
+**As deployed we are on `4.37.0`, not the pinned `4.38.0`.** That is inside the
+v4 line, so every capability this design depends on is present and the gate
+passes. Left alone deliberately rather than bumped for tidiness: upgrading
+Langfuse means reading release notes for ClickHouse migrations and snapshotting
+first, and there is no reason to spend that on a patch difference. Close the gap
+at the next deliberate upgrade.
 
 Before the first `up`, generate fresh values for every secret in the compose
 `.env`. At minimum: `NEXTAUTH_SECRET`, `SALT`, `ENCRYPTION_KEY`, the Postgres
@@ -74,6 +129,29 @@ Verify the exact variable names against the Langfuse self-hosting docs for the
 tag you pinned; they move between major versions.
 
 ## 3. Lock it down before it holds a single trace
+
+> **Current state, 2026-09-19: items 1 and 4 below are FAILING on the live
+> instance.** Both were found by running `npm run langfuse:verify` against it,
+> and both are now enforced by that command
+> (`src/lib/observability/langfuse-hardening.ts`) rather than trusted to
+> whoever is at the keyboard:
+>
+> - **`open_signup`** — `POST /api/auth/signup` is reachable anonymously and
+>   rejects only on schema validation. Anyone who finds the URL can create an
+>   account on the instance that will hold our traces. Fix: `AUTH_DISABLE_SIGNUP=true`
+>   once the team's accounts exist, then audit the existing user list for
+>   accounts nobody recognises.
+> - **`canonical_url_tls`** — `NEXTAUTH_URL` is `http://langfuse.homekup.com`.
+>   TLS terminates at the edge and `http://` 301s to `https://`, so it looks
+>   fine, but NextAuth keys cookie security off the configured URL, not off the
+>   scheme the request arrived on. Session cookies are issued without `Secure`
+>   and go on the wire on the first plaintext request, before the 301. Fix:
+>   set it to the `https://` origin, restart `langfuse-web`, invalidate
+>   existing sessions.
+>
+> Neither is visible from the ingest side, which is the whole reason they are
+> checked in code. Re-run `npm run langfuse:verify` to confirm the fix; it must
+> exit 0 before the instance holds a real trace.
 
 Non-negotiable, in this order:
 
@@ -109,7 +187,9 @@ without these, which is the intended behaviour: no untraced deployed AI calls.
 
 ## 5. Prove it
 
-- `npm run langfuse:verify` exits 0 (instance is v4+, not a v3 patch)
+- `npm run langfuse:verify` exits 0 — this now covers both "is it v4+, not a v3
+  patch" and "is it hardened enough to hold a child's answer" (§3). Today it
+  exits 1.
 - `/api/health` on the deployed app reports `langfuse: true`
 - one graded item produces a visible trace in the Langfuse UI
 - the trace contains the redacted payload shape we expect, not raw identifier

@@ -13,6 +13,7 @@
  * alerted on. Failing here is much cheaper than finding out in week six.
  */
 import { env } from "@/lib/env";
+import { checkLangfuseHardening } from "@/lib/observability/langfuse-hardening";
 import {
   MINIMUM_LANGFUSE_MAJOR,
   PINNED_LANGFUSE_TAG,
@@ -25,21 +26,51 @@ async function main() {
 
   const result = await checkLangfuseServerVersion({ baseUrl });
 
-  if (result.ok) {
-    console.log(`OK  ${result.reason}`);
-    console.log(`    pinned tag for provisioning: ${PINNED_LANGFUSE_TAG}`);
-    return;
+  if (!result.ok) {
+    console.error(`FAIL [${result.status}] ${result.reason}`);
+    if (result.status === "too_old") {
+      console.error(
+        `     Do not push prompts or dashboards at this instance. Redeploy on ` +
+          `${PINNED_LANGFUSE_TAG} (>= v${MINIMUM_LANGFUSE_MAJOR}) — see ` +
+          `docs/runbooks/langfuse-self-host.md.`,
+      );
+    }
+    process.exit(1);
   }
 
-  console.error(`FAIL [${result.status}] ${result.reason}`);
-  if (result.status === "too_old") {
-    console.error(
-      `     Do not push prompts or dashboards at this instance. Redeploy on ` +
-        `${PINNED_LANGFUSE_TAG} (>= v${MINIMUM_LANGFUSE_MAJOR}) — see ` +
-        `docs/runbooks/langfuse-self-host.md.`,
-    );
+  console.log(`OK  ${result.reason}`);
+  console.log(`    pinned tag for provisioning: ${PINNED_LANGFUSE_TAG}`);
+
+  // Capability is only half the question. The other half is whether this
+  // instance is safe to put a child's free-text answer into.
+  const hardening = await checkLangfuseHardening({ baseUrl });
+
+  for (const finding of hardening.findings) {
+    if (finding.ok) {
+      console.log(`OK  [${finding.id}] ${finding.reason}`);
+      continue;
+    }
+    console.error(`FAIL [${finding.id}] ${finding.reason}`);
+    console.error(`     fix: ${finding.remedy}`);
   }
-  process.exit(1);
+
+  if (!hardening.reachable) {
+    console.error(
+      "FAIL none of the hardening checks could reach a conclusion. Treat this " +
+        "instance as unverified rather than clean — see " +
+        "docs/runbooks/langfuse-self-host.md.",
+    );
+    process.exit(1);
+  }
+
+  if (!hardening.ok) {
+    console.error(
+      "\nThis instance is capable but not hardened. Do not point a preview or " +
+        "production tier at it, and do not let a real learner trace land in it " +
+        "until the failures above are cleared.",
+    );
+    process.exit(1);
+  }
 }
 
 main().catch((error) => {
