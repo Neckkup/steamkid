@@ -22,6 +22,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { ItemResult } from "./grade";
+import { answerCharCount } from "./text";
 
 export interface AttemptRecord {
   readonly id: string;
@@ -144,7 +145,7 @@ export class MemoryLearningStore implements LearningStore {
     const draft: DraftRecord = {
       draftNo: base.drafts.length + 1,
       content: input.content,
-      charCount: [...input.content.trim()].length,
+      charCount: answerCharCount(input.content),
       createdAt: new Date().toISOString(),
     };
 

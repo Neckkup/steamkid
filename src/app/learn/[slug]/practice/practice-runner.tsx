@@ -75,6 +75,15 @@ export function PracticeRunner({
   const [outcomes, setOutcomes] = useState<Record<string, ItemOutcome>>({});
   const [sending, setSending] = useState(false);
   const [sendFailed, setSendFailed] = useState(false);
+  /**
+   * `minChars` the server sent back on a 422 `too_short`, or null.
+   *
+   * The submit button is already disabled below the floor, so reaching this
+   * means the two disagreed — a stale tab, a resubmit, a client that did not
+   * load. The child still gets the sentence the screen would have shown them,
+   * never an error code.
+   */
+  const [tooShortMinChars, setTooShortMinChars] = useState<number | null>(null);
 
   const item = items[index]!;
   const finished = index >= items.length;
@@ -255,6 +264,8 @@ export function PracticeRunner({
   function advance() {
     const nextIndex = index + 1;
     setOutcome(null);
+    setSendFailed(false);
+    setTooShortMinChars(null);
     setHintsShown(0);
     setAttemptNo(1);
     setIndex(nextIndex);
@@ -281,6 +292,8 @@ export function PracticeRunner({
     );
     setAttemptNo(next);
     setOutcome(null);
+    setSendFailed(false);
+    setTooShortMinChars(null);
     setHintsShown(0);
     setAnswer(emptyAnswerFor(item));
     startItem(item, next);
@@ -290,6 +303,7 @@ export function PracticeRunner({
     if (sending) return;
     setSending(true);
     setSendFailed(false);
+    setTooShortMinChars(null);
 
     const now = Date.now();
     const span = spanRef.current;
@@ -309,6 +323,14 @@ export function PracticeRunner({
       });
 
       if (!response.ok) {
+        const problem = (await response.json().catch(() => null)) as {
+          error?: string;
+          minChars?: number;
+        } | null;
+        if (problem?.error === "too_short" && typeof problem.minChars === "number") {
+          setTooShortMinChars(problem.minChars);
+          return;
+        }
         setSendFailed(true);
         return;
       }
@@ -475,6 +497,20 @@ export function PracticeRunner({
       ) : null}
 
       {outcome ? <Outcome outcome={outcome} onRead={() => (reviewedFeedbackRef.current = true)} /> : null}
+
+      {/* Always mounted so the message is announced when it appears, not only
+          seen — the child who hits this is the one whose screen is out of step. */}
+      <div aria-live="polite">
+        {tooShortMinChars !== null ? (
+          <Card className="mt-4 border-notyet bg-notyet-soft">
+            <p className="font-semibold">เขียนอีกนิดนะ</p>
+            <p className="mt-1">
+              ข้อนี้อยากให้เขียนอย่างน้อย {tooShortMinChars} ตัวอักษร คำตอบของหนูยังอยู่ครบ
+              เติมอีกหน่อยแล้วกดส่งได้เลย
+            </p>
+          </Card>
+        ) : null}
+      </div>
 
       {sendFailed ? (
         <Card className="mt-4 border-notyet bg-notyet-soft">

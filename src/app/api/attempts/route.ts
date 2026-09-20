@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { getItemById } from "@/content";
+import { getItemById, isWrittenItem } from "@/content";
 import { gradeItem, isClosedItem, type ItemAnswer } from "@/lib/learning/grade";
 import { ensureLearnerRef, getConsentState, hasScope } from "@/lib/learning/session";
 import { getLearningStore } from "@/lib/learning/store";
+import { answerCharCount } from "@/lib/learning/text";
 
 export const dynamic = "force-dynamic";
 
@@ -67,6 +68,23 @@ export async function POST(request: Request): Promise<Response> {
   }
   if (answer.type === "text" && answer.text.trim().length === 0) {
     return NextResponse.json({ error: "empty_answer" }, { status: 422 });
+  }
+  /**
+   * The same `minChars` floor `POST /api/submissions` enforces (PRO-44).
+   *
+   * The practice screen already disables the submit button below it, but a
+   * client-side gate is a courtesy, not a rule: a stale tab, a broken build or
+   * a direct POST used to walk a four-character answer straight into the
+   * `pending_ai` queue, where PRO-8's grader would later read it as real
+   * schoolwork. Rejecting here keeps the queue clean and keeps the two written
+   * paths — exercise item and lesson project — telling a child the same thing.
+   */
+  if (
+    answer.type === "text" &&
+    isWrittenItem(item) &&
+    answerCharCount(answer.text) < item.minChars
+  ) {
+    return NextResponse.json({ error: "too_short", minChars: item.minChars }, { status: 422 });
   }
 
   const consent = await getConsentState();

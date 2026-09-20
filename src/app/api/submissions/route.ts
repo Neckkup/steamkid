@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getItemById, isWrittenItem } from "@/content";
 import { ensureLearnerRef, getConsentState } from "@/lib/learning/session";
 import { getLearningStore } from "@/lib/learning/store";
+import { answerCharCount } from "@/lib/learning/text";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +44,7 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const trimmed = parsed.data.content.trim();
-  if (parsed.data.action === "submit" && trimmed.length < found.item.minChars) {
+  if (parsed.data.action === "submit" && answerCharCount(trimmed) < found.item.minChars) {
     return NextResponse.json(
       { error: "too_short", minChars: found.item.minChars },
       { status: 422 },
