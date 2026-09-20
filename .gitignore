@@ -46,6 +46,9 @@ next-env.d.ts
 # agent tooling
 /.claude/
 
+# rootless chromium sysroot + browser downloads (see scripts/chromium-sysroot.ts)
+/.cache/
+
 # core dumps — a crashed PGlite worker drops one of these in the repo root,
 # and they run to over a gigabyte each
 core.*
