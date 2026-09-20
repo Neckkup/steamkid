@@ -85,9 +85,13 @@ export interface PromptDefinition {
 const OBSERVABILITY_SMOKE: PromptDefinition = {
   name: "ops/observability-smoke",
   feature: "ops",
-  // The cheapest registered model, with thinking off: the canary proves the
-  // pipeline, not the model's reasoning, and it runs on every deploy.
-  config: { model: "gemini-2.5-flash-lite", maxTokens: 256, effort: "minimal" },
+  // The cheapest *callable* registered model, with thinking off: the canary
+  // proves the pipeline, not the model's reasoning, and it runs on every
+  // deploy. Was `gemini-2.5-flash-lite` until PRO-29 found it still listed by
+  // `models.list` but returning 404 on `generateContent` ("no longer available
+  // to new users") — a retired model is a canary that fails for a reason that
+  // has nothing to do with the pipeline it is meant to test.
+  config: { model: "gemini-3.1-flash-lite", maxTokens: 256, effort: "minimal" },
   labels: [PRODUCTION_LABEL],
   tags: ["ops", "canary"],
   commitMessage: "PRO-27: observability canary on the Gemini API",
