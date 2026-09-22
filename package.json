@@ -23,7 +23,8 @@
     "verify:pipeline": "tsx scripts/verify-behaviour-pipeline.ts",
     "browser:setup": "bash scripts/setup-browser.sh",
     "browser:check": "bash scripts/setup-browser.sh --check",
-    "visual:audit": "bash -c 'eval \"$(bash scripts/setup-browser.sh)\" && tsx scripts/visual-audit.ts \"$@\"' --"
+    "visual:audit": "bash -c 'eval \"$(bash scripts/setup-browser.sh)\" && tsx scripts/visual-audit.ts \"$@\"' --",
+    "eval:grading": "tsx --env-file-if-exists=.env.local scripts/grading-eval.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.3",
