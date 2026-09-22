@@ -183,6 +183,39 @@ The general rule, since this is the second time it has bitten on this gate:
 **an absent signal is not a passing signal.** Both of the original §3 findings
 were invisible from the ingest side; this one was invisible from the check side.
 
+### 3.2 The gate is enforced at runtime, not only by the script (2026-09-22, PRO-84)
+
+Until PRO-84, everything in §3 depended on someone remembering to run
+`npm run langfuse:verify` before a deploy. `checkLangfuseHardening` had exactly
+one caller and it was that script. A procedural gate is the wrong shape for this
+risk: an identifier that leaves our infrastructure has left it permanently.
+
+`src/lib/observability/trace-destination.ts` now runs the same checks inside the
+request path. **A trace bound to a real learner is not sent to an instance that
+fails hardening, or to one that cannot be verified.** Consequences worth knowing
+before you debug a missing trace:
+
+- **A missing production trace may be this gate, not an ingestion failure.** It
+  logs the failing check id and its remedy on every fresh probe, and one line
+  per suppressed trace. Check the app logs for `[langfuse]` before touching the
+  instance.
+- **The child is still graded.** Only the trace is dropped. Losing a trace costs
+  a debugging session; an open-registration instance holding a learner ref costs
+  something we cannot take back.
+- **Development is not blocked.** The gate keys off whether the trace carries a
+  learner binding (`learnerRef`, `sessionId`, or `metadata.submissionId`), not
+  off the tier. Dataset runs and evals carry none of those and keep flowing.
+  `scripts/ai-smoke.ts` fabricates a learner ref on purpose and declares
+  `audience: "synthetic"` — a declaration that is ignored when
+  `APP_ENV=production`, where a learner ref is always a real child's. Run the
+  smoke against production without `learnerRef`.
+- **The verdict is cached in process memory only** — 5 min on a pass, 1 min on a
+  failure, keyed by base URL and build id. Clearing a finding restores traces
+  within about a minute with no redeploy; nothing survives a release.
+
+`npm run langfuse:verify` is still the right command for a deliberate check, and
+still the one that prints the full report.
+
 Non-negotiable, in this order:
 
 1. **TLS.** Caddy or nginx in front, real certificate. No plaintext ingress.

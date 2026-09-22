@@ -85,6 +85,12 @@ async function main() {
     learnerRef: "learner_smoke_0001",
     correlationId,
     sessionId,
+    // No child is behind those two ids, so the hardening gate in
+    // `trace-destination.ts` must not treat this canary as a learner trace and
+    // refuse to send it — the canary's whole job is to prove the path works.
+    // The declaration is ignored when APP_ENV=production, where a learner ref
+    // is always a real one; run the smoke there without `learnerRef`.
+    audience: "synthetic",
     tags: ["smoke"],
     variables: { learnerText: HOSTILE_LEARNER_TEXT },
     outputSchema: {

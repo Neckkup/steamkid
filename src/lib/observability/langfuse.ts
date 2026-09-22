@@ -2,18 +2,24 @@ import { Langfuse } from "langfuse";
 
 import { env, isLangfuseConfigured, langfuseEnvironment } from "@/lib/env";
 import { UUID_PATTERN } from "@/lib/events/payload-schema";
+import {
+  resolveTraceDestination,
+  type TraceAudience,
+} from "@/lib/observability/trace-destination";
 import { pickAllowed, redactDeep } from "@/lib/privacy/redact";
 
 /**
  * The only supported way to reach Langfuse.
  *
- * Two rules are enforced here rather than left to each caller:
+ * Three rules are enforced here rather than left to each caller:
  *
  * 1. Every AI call is traced. `traceAiCall` wraps the call; a feature that
  *    invokes an LLM outside this helper is considered unfinished.
  * 2. Nothing identifying leaves our infrastructure. Trace input/output go
  *    through the redaction layer, and the trace `userId` is a pseudonymous
  *    learner id, never an email, a name, or an auth subject.
+ * 3. A trace bound to a real learner only goes to an instance proven hardened.
+ *    See `trace-destination.ts`; the gate is applied in `traceAiCall` below.
  */
 
 let client: Langfuse | null = null;
@@ -254,6 +260,18 @@ export interface AiCallOptions {
    */
   input?: unknown;
   tags?: string[];
+  /**
+   * Override the learner/synthetic classification the hardening gate keys off.
+   *
+   * Leave it unset in product code: a trace carrying `learnerRef`, `sessionId`
+   * or `metadata.submissionId` is treated as a real child's by default, and
+   * that default is the safe one. Set `"synthetic"` only where the binding
+   * fields are fabricated — `scripts/ai-smoke.ts` mints a fake learner ref and
+   * a fake session so the canary exercises the real shape of a call. The claim
+   * is recorded on the trace as a `synthetic` tag, so it is visible in Langfuse
+   * and not only in the source. See `trace-destination.ts`.
+   */
+  audience?: TraceAudience;
 }
 
 /**
@@ -343,15 +361,36 @@ export interface AiCallResult<T> {
 }
 
 /**
+ * Everything the wrapped call needs in order to attach to *this* trace.
+ *
+ * `langfuse` is handed down rather than re-fetched with `getLangfuse()` because
+ * the hardening gate lives one level up: a callback that reached for the client
+ * itself could still attach a generation — carrying the correlation id, the
+ * prompt name, and the metadata — to an instance this trace was just refused
+ * by. Null here means "this call is not being observed", and every observation
+ * a feature wants to add hangs off this one handle.
+ */
+export interface AiCallContext {
+  traceId: string | null;
+  langfuse: Langfuse | null;
+}
+
+/**
  * Wrap an AI call so it always produces a Langfuse trace.
  *
  * When Langfuse is unconfigured (bare local checkout) the call still runs, but
  * `assertObservabilityReady()` in `src/lib/env.ts` makes that impossible in
  * preview and production.
+ *
+ * The same is true when the hardening gate refuses the destination: the child
+ * still gets graded, and the trace is dropped with a logged reason. That
+ * direction is deliberate. Losing a trace costs us a debugging session; sending
+ * a learner-bound trace to an instance anyone can register an account on costs
+ * a child an identifier we can never call back.
  */
 export async function traceAiCall<T>(
   options: AiCallOptions,
-  fn: (ctx: { traceId: string | null }) => Promise<AiCallResult<T>>,
+  fn: (ctx: AiCallContext) => Promise<AiCallResult<T>>,
 ): Promise<T> {
   // Before the model call and before the Langfuse check, so a bare local
   // checkout catches a mis-wired call at the same moment production would.
@@ -364,9 +403,29 @@ export async function traceAiCall<T>(
     // ai_verdict row that satisfies the CHECK. The trace it names does not
     // exist yet — `assertObservabilityReady()` is what keeps that a local-only
     // state.
-    const result = await fn({ traceId: identity.correlationId ?? null });
+    const result = await fn({ traceId: identity.correlationId ?? null, langfuse: null });
     return result.output;
   }
+
+  // The gate. Only reached once the destination is actually configured, and
+  // cached inside `resolveTraceDestination`, so this is not a network round
+  // trip per graded item.
+  const destination = await resolveTraceDestination(options);
+  if (!destination.allowed) {
+    console.warn(
+      `[langfuse] suppressed ${options.audience ?? "learner"} trace ${options.name}` +
+        `${identity.correlationId ? ` (${identity.correlationId})` : ""}: ${destination.reason}`,
+    );
+    return (await fn({ traceId: identity.correlationId ?? null, langfuse: null })).output;
+  }
+
+  // A declared-synthetic trace says so in the data too, not just in the source,
+  // so "which of these traces belong to a child" is answerable in the Langfuse
+  // UI by anyone auditing the instance.
+  const tags =
+    destination.audience === "synthetic" && options.audience === "synthetic"
+      ? [...new Set([...(options.tags ?? []), "synthetic"])]
+      : options.tags;
 
   const trace = langfuse.trace({
     // Passing `id` is what makes Langfuse adopt our id instead of minting its
@@ -376,14 +435,14 @@ export async function traceAiCall<T>(
     sessionId: identity.sessionId,
     name: options.name,
     userId: options.learnerRef,
-    tags: options.tags,
+    tags,
     metadata: options.metadata ? allowedTraceMetadata(options.metadata) : undefined,
     input: options.input === undefined ? undefined : redactDeep(options.input),
   });
 
   const startedAt = Date.now();
   try {
-    const result = await fn({ traceId: trace.id });
+    const result = await fn({ traceId: trace.id, langfuse });
     trace.update({
       output: redactDeep(result.output),
       metadata: { durationMs: Date.now() - startedAt, usage: result.usage ?? null },
@@ -396,7 +455,7 @@ export async function traceAiCall<T>(
       output: {
         error: error instanceof Error ? redactDeep(error.message) : "unknown error",
       },
-      tags: [...(options.tags ?? []), "error"],
+      tags: [...(tags ?? []), "error"],
       metadata: { durationMs: Date.now() - startedAt, failed: true },
     });
     throw error;

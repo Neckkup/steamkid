@@ -18,6 +18,7 @@ import {
   traceUrl,
   type TraceMetadata,
 } from "@/lib/observability/langfuse";
+import type { TraceAudience } from "@/lib/observability/trace-destination";
 import { referenceOnly } from "@/lib/privacy/redact";
 
 /**
@@ -113,6 +114,15 @@ export interface CallModelOptions {
   outputSchema?: Record<string, unknown>;
   /** Overrides the prompt version's model. Use only for A/B runs. */
   model?: ModelId;
+  /**
+   * Ops escape hatch for the hardening gate — see `AiCallOptions.audience`.
+   *
+   * A product feature must never set this: its learner ref belongs to a child,
+   * and the default classification is already the right one. It exists for
+   * canaries that fabricate a learner ref on purpose, and it is ignored
+   * entirely when `APP_ENV=production`.
+   */
+  audience?: TraceAudience;
 }
 
 export interface CallModelResult {
@@ -154,6 +164,7 @@ export async function callModel(options: CallModelOptions): Promise<CallModelRes
       learnerRef: options.learnerRef,
       correlationId: options.correlationId,
       sessionId: options.sessionId,
+      audience: options.audience,
       metadata,
       tags: options.tags,
       input: options.traceInput ?? referenceOnly("prompt-variables", prompt.definition.name),
@@ -164,7 +175,12 @@ export async function callModel(options: CallModelOptions): Promise<CallModelRes
       );
       const thinking = thinkingSettings(model, prompt.config.effort);
 
-      const langfuse = getLangfuse();
+      // `ctx.langfuse`, never `getLangfuse()`: when the hardening gate refuses
+      // the destination this is null, and the generation — which carries the
+      // correlation id, the prompt name and the allow-listed metadata — is not
+      // created either. Reaching for the client here would route around the
+      // gate that just suppressed the parent trace.
+      const langfuse = ctx.langfuse;
       const startedAt = new Date();
       // The generation is created before the call so a request that never
       // returns still leaves an observation behind. A timeout that produces no
