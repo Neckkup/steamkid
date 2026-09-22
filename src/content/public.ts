@@ -74,9 +74,26 @@ export function toPublicItem(item: ExerciseItem): PublicItem {
   }
 }
 
+/**
+ * The one predicate that decides what the practice runner asks.
+ *
+ * `practiceItems` and `lessonWorkload` both go through it so the count a lesson
+ * card promises cannot drift from the "ข้อ 1 จาก N" a child then sees (PRO-40).
+ */
+const isPracticeItem = (item: ExerciseItem): boolean => item.type !== "long_text";
+
 /** The items a child answers inline on the practice screen. */
 export function practiceItems(lesson: Lesson): readonly PublicItem[] {
-  return lesson.items.filter((item) => item.type !== "long_text").map(toPublicItem);
+  return lesson.items.filter(isPracticeItem).map(toPublicItem);
+}
+
+/** What a lesson actually asks of a child: inline questions, plus any project. */
+export function lessonWorkload(lesson: Lesson): {
+  readonly questionCount: number;
+  readonly projectCount: number;
+} {
+  const questionCount = lesson.items.filter(isPracticeItem).length;
+  return { questionCount, projectCount: lesson.items.length - questionCount };
 }
 
 /** The one long-form piece of work per lesson, handled on its own screen. */

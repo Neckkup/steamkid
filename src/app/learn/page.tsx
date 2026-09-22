@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { getCourse, listLessons } from "@/content";
+import { lessonWorkload } from "@/content/public";
 import { ButtonLink, Card, EmptyState, PageHeading, PageShell } from "@/components/ui";
 import { getConsentState } from "@/lib/learning/session";
 
@@ -31,23 +32,31 @@ export default async function LearnPage() {
       <PageHeading title="บทเรียนของหนู" lead={`หน่วย: ${course.title}`} />
 
       <ol className="grid gap-4">
-        {lessons.map((lesson, index) => (
-          <li key={lesson.id}>
-            <Link
-              href={`/learn/${lesson.slug}`}
-              className="block rounded-3xl border border-line bg-surface p-5 transition-colors hover:border-brand hover:bg-brand-soft sm:p-6"
-            >
-              <span className="text-base font-semibold text-brand-strong">
-                บทที่ {index + 1}
-              </span>
-              <h2 className="mt-1 text-2xl font-bold leading-snug">{lesson.title}</h2>
-              <p className="mt-2 text-muted">{lesson.summary}</p>
-              <p className="mt-3 text-base text-muted">
-                ใช้เวลาประมาณ {lesson.estMinutes} นาที · มีคำถาม {lesson.items.length} ข้อ
-              </p>
-            </Link>
-          </li>
-        ))}
+        {lessons.map((lesson, index) => {
+          // The questions are what the practice screen counts; the project is a
+          // separate screen, so it is named separately instead of padding the
+          // number a child is about to check against "ข้อ 1 จาก N" (PRO-40).
+          const { questionCount, projectCount } = lessonWorkload(lesson);
+
+          return (
+            <li key={lesson.id}>
+              <Link
+                href={`/learn/${lesson.slug}`}
+                className="block rounded-3xl border border-line bg-surface p-5 transition-colors hover:border-brand hover:bg-brand-soft sm:p-6"
+              >
+                <span className="text-base font-semibold text-brand-strong">
+                  บทที่ {index + 1}
+                </span>
+                <h2 className="mt-1 text-2xl font-bold leading-snug">{lesson.title}</h2>
+                <p className="mt-2 text-muted">{lesson.summary}</p>
+                <p className="mt-3 text-base text-muted">
+                  ใช้เวลาประมาณ {lesson.estMinutes} นาที · คำถาม {questionCount} ข้อ
+                  {projectCount > 0 ? ` และชิ้นงาน ${projectCount} ชิ้น` : ""}
+                </p>
+              </Link>
+            </li>
+          );
+        })}
       </ol>
 
       <Card className="mt-6 border-waiting bg-waiting-soft">
