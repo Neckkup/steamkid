@@ -48,7 +48,19 @@ const schema = z.object({
    */
   GEMINI_API_KEY: blankAsUndefined(z.string().min(1)),
 
-  /** Langfuse. `LANGFUSE_BASEURL` points at our self-hosted instance. */
+  /**
+   * Langfuse. `LANGFUSE_BASEURL` points at our self-hosted instance.
+   *
+   * **It is not an optional nicety, it is the destination.** The Langfuse SDK
+   * falls back to `https://cloud.langfuse.com` when no `baseUrl` is passed, so
+   * an unset value here does not disable tracing — it redirects every trace we
+   * produce to a US SaaS we deliberately rejected in
+   * `docs/adr/0002-observability-and-privacy.md`. That is why
+   * `isLangfuseConfigured` below requires all three values and not just the
+   * keys: "no base URL" must mean "do not trace", never "trace somewhere else".
+   *
+   * `LANGFUSE_BASE_URL` is accepted as an alias (see `readEnv`).
+   */
   LANGFUSE_PUBLIC_KEY: blankAsUndefined(z.string().min(1)),
   LANGFUSE_SECRET_KEY: blankAsUndefined(z.string().min(1)),
   LANGFUSE_BASEURL: blankAsUndefined(z.string().url()),
@@ -76,7 +88,25 @@ const schema = z.object({
 
 export type Env = z.infer<typeof schema>;
 
-const parsed = schema.safeParse(process.env);
+/**
+ * The process environment, with the one name we know drifts folded in.
+ *
+ * `LANGFUSE_BASEURL` (no underscore) is the name the Langfuse SDK itself uses
+ * and the name every doc and script in this repo uses. Secret injection in our
+ * runner supplies `LANGFUSE_BASE_URL`. Those are one value with two spellings,
+ * and getting the spelling wrong is not a harmless typo here: with the keys
+ * present and no base URL, the SDK silently targets `cloud.langfuse.com`.
+ *
+ * So accept both rather than let a one-character difference choose the
+ * destination of a child's trace. `LANGFUSE_BASEURL` wins when both are set;
+ * the alias is read only as a fallback.
+ */
+function readEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const baseUrl = source.LANGFUSE_BASEURL?.trim() || source.LANGFUSE_BASE_URL?.trim();
+  return baseUrl ? { ...source, LANGFUSE_BASEURL: baseUrl } : source;
+}
+
+const parsed = schema.safeParse(readEnv(process.env));
 
 if (!parsed.success) {
   const details = parsed.error.issues
@@ -87,8 +117,20 @@ if (!parsed.success) {
 
 export const env: Env = parsed.data;
 
+/**
+ * Langfuse is configured only when we know *where* it is.
+ *
+ * The base URL is part of the condition on purpose. Treating two-of-three as
+ * "configured" is what hands the SDK its `cloud.langfuse.com` default, and the
+ * failure is invisible from here: traces are produced, the app looks healthy,
+ * and a redacted child's answer is on a US vendor's disk. Fail closed instead —
+ * an unconfigured destination disables tracing locally and refuses to boot a
+ * deployed tier (`assertObservabilityReady`).
+ */
 export const isLangfuseConfigured =
-  Boolean(env.LANGFUSE_PUBLIC_KEY) && Boolean(env.LANGFUSE_SECRET_KEY);
+  Boolean(env.LANGFUSE_PUBLIC_KEY) &&
+  Boolean(env.LANGFUSE_SECRET_KEY) &&
+  Boolean(env.LANGFUSE_BASEURL);
 
 /**
  * The Langfuse environment every trace, observation and score is tagged with.
@@ -118,9 +160,17 @@ export const isDatabaseConfigured = Boolean(env.DATABASE_URL);
  */
 export function assertObservabilityReady(): void {
   if (env.APP_ENV === "local") return;
-  if (!isLangfuseConfigured) {
-    throw new Error(
-      `APP_ENV=${env.APP_ENV} requires LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY.`,
-    );
-  }
+  if (isLangfuseConfigured) return;
+
+  const missing = [
+    env.LANGFUSE_PUBLIC_KEY ? null : "LANGFUSE_PUBLIC_KEY",
+    env.LANGFUSE_SECRET_KEY ? null : "LANGFUSE_SECRET_KEY",
+    env.LANGFUSE_BASEURL ? null : "LANGFUSE_BASEURL (or LANGFUSE_BASE_URL)",
+  ].filter((name): name is string => name !== null);
+
+  throw new Error(
+    `APP_ENV=${env.APP_ENV} requires a fully configured Langfuse. Missing: ` +
+      `${missing.join(", ")}. A missing base URL is the dangerous one: the SDK ` +
+      `would default to cloud.langfuse.com and ship our traces to a US vendor.`,
+  );
 }
