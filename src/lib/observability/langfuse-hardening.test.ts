@@ -29,8 +29,12 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+/** Every reachable fixture has to look like a live Langfuse first. */
+const HEALTHY: Route = () => json({ status: "OK", version: "4.37.0" });
+
 /** What the live instance actually returned before hardening. */
 const OPEN_INSTANCE = {
+  "/api/public/health": HEALTHY,
   "/api/auth/providers": () =>
     json({
       credentials: {
@@ -46,6 +50,7 @@ const OPEN_INSTANCE = {
 } satisfies Record<string, Route>;
 
 const HARDENED_INSTANCE = {
+  "/api/public/health": HEALTHY,
   "/api/auth/providers": () =>
     json({
       credentials: {
@@ -94,11 +99,37 @@ describe("checkLangfuseHardening", () => {
   it("treats a signup route that is not served at all as a pass", async () => {
     const report = await checkLangfuseHardening({
       baseUrl: "https://langfuse.homekup.com",
-      fetchImpl: router({ "/api/auth/providers": HARDENED_INSTANCE["/api/auth/providers"] }),
+      fetchImpl: router({
+        "/api/public/health": HEALTHY,
+        "/api/auth/providers": HARDENED_INSTANCE["/api/auth/providers"],
+      }),
     });
 
     expect(report.ok).toBe(true);
     expect(report.findings.find((f) => f.id === "open_signup")?.ok).toBe(true);
+  });
+
+  /**
+   * The state `langfuse.homekup.com` was actually in on 2026-09-22: the origin
+   * had gone away and the edge answered a plaintext `404 page not found` on
+   * every path. Before the liveness gate this scored as one passing finding,
+   * because a 404 on the signup route reads as "compiled out" — a vanished host
+   * reported as safe to hold a child's answer.
+   */
+  it("does not read a host that 404s everything as a hardened one", async () => {
+    const report = await checkLangfuseHardening({
+      baseUrl: "https://langfuse.homekup.com",
+      fetchImpl: router({}), // the router's default is a bare 404
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.reachable).toBe(false);
+    expect(report.findings.find((f) => f.id === "open_signup")).toBeUndefined();
+
+    const live = report.findings.find((f) => f.id === "instance_live");
+    expect(live?.ok).toBe(false);
+    expect(live?.severity).toBe("blocker");
+    expect(live?.reason).toContain("404");
   });
 
   it("tolerates a trailing slash on the base URL", async () => {
@@ -126,13 +157,29 @@ describe("checkLangfuseHardening", () => {
   it("degrades to 'checked less' rather than 'blocked everything' when an endpoint moves", async () => {
     const report = await checkLangfuseHardening({
       baseUrl: "https://langfuse.homekup.com",
-      fetchImpl: (async () => {
+      // A live Langfuse whose auth endpoints have moved under it.
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        if (String(input).endsWith("/api/public/health")) return HEALTHY({ url: "", method: "GET" });
         throw new Error("ECONNRESET");
       }) as unknown as typeof fetch,
     });
 
     // Nothing could be concluded, so nothing is asserted as safe either.
+    expect(report.ok).toBe(false);
     expect(report.reachable).toBe(false);
     expect(report.findings).toHaveLength(0);
+  });
+
+  it("fails closed when the instance itself cannot be reached", async () => {
+    const report = await checkLangfuseHardening({
+      baseUrl: "https://langfuse.homekup.com",
+      fetchImpl: (async () => {
+        throw new Error("ECONNRESET");
+      }) as unknown as typeof fetch,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.reachable).toBe(false);
+    expect(report.findings.find((f) => f.id === "instance_live")?.reason).toContain("ECONNRESET");
   });
 });

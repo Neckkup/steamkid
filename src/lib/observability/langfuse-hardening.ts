@@ -15,7 +15,7 @@
  * time, before an org, a project, or an API key exists.
  */
 
-export type HardeningCheckId = "canonical_url_tls" | "open_signup";
+export type HardeningCheckId = "instance_live" | "canonical_url_tls" | "open_signup";
 
 export interface HardeningFinding {
   id: HardeningCheckId;
@@ -34,7 +34,12 @@ export interface HardeningFinding {
 
 export interface LangfuseHardeningReport {
   ok: boolean;
-  /** False when the instance did not answer at all; findings will be empty. */
+  /**
+   * False when nothing could be concluded about hardening — either the instance
+   * never answered as a Langfuse at all, or every individual check came back
+   * inconclusive. In the first case an `instance_live` finding says so; in the
+   * second `findings` is empty. Either way the instance is unverified, not clean.
+   */
   reachable: boolean;
   findings: HardeningFinding[];
 }
@@ -48,6 +53,63 @@ export interface HardeningCheckOptions {
 
 function normaliseBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/$/, "");
+}
+
+/**
+ * Prove the origin is a live Langfuse before believing anything the hardening
+ * probes below infer from a 404.
+ *
+ * On 2026-09-22 `langfuse.homekup.com` started answering a plaintext
+ * `404 page not found` on *every* path, the edge's own response — the origin
+ * was gone, not hardened. `checkOpenSignup` reads a 404 as "the route is
+ * compiled out", which is the strongest possible pass, and `checkCanonicalUrlTls`
+ * abstains on a non-OK response. A vanished host therefore produced a report of
+ * exactly one finding, passing: "safe to hold a child's answer".
+ *
+ * So liveness is a precondition rather than one more check. A 404 only means
+ * "compiled out" on a box that is demonstrably still serving Langfuse.
+ * `/api/public/health` is unauthenticated, which keeps this usable at
+ * provisioning time before any org, project, or API key exists.
+ *
+ * Returns null when the instance is live, or the blocking finding when it is not.
+ */
+async function checkInstanceLive(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
+): Promise<HardeningFinding | null> {
+  const url = `${baseUrl}/api/public/health`;
+  const fail = (detail: string): HardeningFinding => ({
+    id: "instance_live",
+    ok: false,
+    severity: "blocker",
+    reason:
+      `${url} did not answer as a Langfuse instance (${detail}), so no hardening ` +
+      "claim about this origin can be made. An origin that is absent is not a " +
+      "hardened one: the signup probe cannot tell a compiled-out route from a " +
+      "host that has stopped serving.",
+    remedy:
+      "Bring the instance back up and confirm it answers on " +
+      `${url}, then re-run the hardening checks. Until it does, treat the ` +
+      "instance as unverified and keep real learner traces off it.",
+  });
+
+  try {
+    const response = await fetchImpl(url, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) return fail(`HTTP ${response.status}`);
+    const payload: unknown = await response.json();
+    if (typeof payload !== "object" || payload === null) {
+      return fail("the response body was not a JSON object");
+    }
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : "unknown error");
+  }
+
+  return null;
 }
 
 /**
@@ -207,6 +269,15 @@ export async function checkLangfuseHardening(
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const normalised = normaliseBaseUrl(baseUrl);
+
+  // Nothing below can be interpreted against an origin that is not serving
+  // Langfuse, so this is a gate rather than a finding among findings. Note that
+  // a *passing* liveness probe deliberately adds no finding: "live" must never
+  // be able to stand in for a hardening conclusion in the `ok` tally below.
+  const notLive = await checkInstanceLive(normalised, fetchImpl, timeoutMs);
+  if (notLive) {
+    return { ok: false, reachable: false, findings: [notLive] };
+  }
 
   const findings = (
     await Promise.all([

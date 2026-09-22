@@ -1,9 +1,13 @@
 # Runbook — Langfuse self-host
 
-- **Status:** **provisioned and answering** at `https://langfuse.homekup.com`,
-  reporting `4.37.0` — the v4+ requirement is met. **Not yet hardened:** as of
-  2026-09-19 `npm run langfuse:verify` exits 1 on two findings (see §3). No
-  learner trace may land in it until those clear.
+- **Status (2026-09-22): the instance is GONE.** `https://langfuse.homekup.com`
+  now answers a plaintext `404 page not found` on **every** path — `/`,
+  `/api/public/health`, `/api/auth/providers`, `/auth/sign-up` — served from the
+  Cloudflare edge, not from Langfuse. `npm run langfuse:verify` exits 1 at the
+  first gate: `FAIL [unreachable] …/api/public/health returned HTTP 404`.
+  It was provisioned and answering `4.37.0` on 2026-09-19 (the v4+ requirement
+  was met then) with two open hardening findings (§3). Those two findings are
+  now unverifiable rather than fixed — see §3.1.
 - **Owner:** CTO
 - **Issue:** PRO-12
 - **Why self-hosted at all:** `docs/adr/0002-observability-and-privacy.md`
@@ -152,6 +156,32 @@ tag you pinned; they move between major versions.
 > Neither is visible from the ingest side, which is the whole reason they are
 > checked in code. Re-run `npm run langfuse:verify` to confirm the fix; it must
 > exit 0 before the instance holds a real trace.
+>
+> **As of 2026-09-22 neither can be re-checked at all** — the origin is gone
+> (see the Status block and §3.1). Both stand as last observed on 2026-09-19:
+> open, unfixed, and now unverifiable. Whatever comes back up at this hostname
+> is a new instance as far as this gate is concerned and gets re-checked from
+> scratch, whether or not it claims to be the same box.
+
+### 3.1 A host that has vanished is not a hardened host (2026-09-22)
+
+When the origin disappeared, the hardening checks nearly reported the opposite
+of the truth. `checkOpenSignup` reads HTTP 404 on `/api/auth/signup` as *"the
+route is compiled out — the strongest possible pass"*, and `checkCanonicalUrlTls`
+abstains when `/api/auth/providers` does not answer. A host 404ing everything
+therefore produced one finding, passing, and a report of `ok: true`: **safe to
+put a child's answer into**. The only thing standing between that and a green
+gate was `langfuse:verify` happening to run the version check first and exit.
+
+Fixed by making liveness a precondition rather than one more check
+(`checkInstanceLive` in `src/lib/observability/langfuse-hardening.ts`): a 404
+only means "compiled out" on a box that is demonstrably still serving Langfuse
+on `/api/public/health`. A *passing* liveness probe deliberately contributes no
+finding, so "the host is up" can never stand in for a hardening conclusion.
+
+The general rule, since this is the second time it has bitten on this gate:
+**an absent signal is not a passing signal.** Both of the original §3 findings
+were invisible from the ingest side; this one was invisible from the check side.
 
 Non-negotiable, in this order:
 
