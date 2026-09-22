@@ -1,10 +1,24 @@
 // steamkid data model.
 //
-// Ownership: the real domain schema (learners, consent records, behaviour
-// events, submissions, AI verdicts, teacher corrections) is designed in PRO-3
-// and implemented by Backend in PRO-7. This file deliberately ships only the
-// datasource/generator wiring plus the two constraints that are expensive to
-// retrofit, so the first migration already has them:
+// ⚠️ THIS FILE IS NOT THE SCHEMA. Read `prisma/migrations/` instead.
+//
+// data-schema §7 rule 3 makes DDL SQL-first: the migrations in
+// `prisma/migrations/*/migration.sql` are the source of truth, and this file is
+// an artifact that `prisma db pull` re-syncs from a live database. No database
+// has been provisioned yet (PRO-68, PRO-70), so it has never been pulled and
+// shows two models out of roughly twenty tables.
+//
+// What the migrations already contain and this file does not: the four schemas
+// (`identity` / `app` / `events` / `ml`), the partitioned behaviour pipe, the
+// content and attempt tables, `app.ai_verdict` and `app.ai_verdict_criterion`,
+// `app.teacher_correction`, and the consent-gated `ml` export views.
+//
+// Reading this file as "what exists" has already cost one ticket's premise
+// (PRO-76 was written believing there was no verdict table). Re-pull it the day
+// a database exists; until then, `prisma/migrations/` is the answer.
+//
+// The two constraints below are the ones expensive to retrofit, kept here
+// because the generated client leans on them:
 //
 //   1. A pseudonymous `Learner.id` surrogate key. Nothing outside our
 //      infrastructure ever sees anything else for a child.
