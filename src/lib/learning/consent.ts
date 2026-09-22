@@ -11,6 +11,13 @@
  *     has already trained on a child's work cannot untrain, so a consent we
  *     cannot honour on withdrawal is a consent we must not pre-tick.
  *
+ * The rule those two cases share is now the rule for the whole list, and
+ * `consent.test.ts` holds it: **only a `required` scope may be pre-ticked**
+ * (PRO-39). A scope the form itself describes as optional has to be an
+ * affirmative choice the guardian makes, not a box they pass over on the way to
+ * the button. Required scopes stay pre-ticked because declining them declines
+ * the product — there is no quiet over-collection to hide in.
+ *
  * Bump `CONSENT_POLICY_VERSION` whenever the wording below changes. PRO-3 is
  * explicit that consent does not carry over a policy version.
  */
@@ -53,7 +60,7 @@ export const CONSENT_SCOPES: readonly ConsentScopeDefinition[] = [
     detail:
       "เช่น ใช้เวลาคิดนานแค่ไหน กลับไปอ่านซ้ำไหม ขอคำใบ้กี่ครั้ง — ไม่มีการเก็บเนื้อคำตอบไว้ในข้อมูลส่วนนี้",
     required: false,
-    defaultChecked: true,
+    defaultChecked: false,
     consequenceIfOff: "ถ้าไม่ยินยอม ยังเรียนได้ตามปกติ แต่จะไม่มีกราฟการเติบโตและไม่มีเส้นทางเรียนรู้ที่แนะนำให้",
   },
   {
