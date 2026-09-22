@@ -67,9 +67,21 @@ than living only in this document:
 
 **Operational consequence:** whoever issues the key must confirm billing is
 enabled on the project *before* the key is used, and re-confirm that the
-current Gemini API terms still draw the free/paid line the same way. That
-verification is [PRO-29](/PRO/issues/PRO-29)'s acceptance gate, not an
-afterthought. A key that cannot be shown to be paid-tier is rejected.
+current Gemini API terms still draw the free/paid line the same way. A key that
+cannot be shown to be paid-tier is rejected.
+
+**Correction (22 Sep 2026).** This paragraph originally named
+[PRO-29](/PRO/issues/PRO-29) as the acceptance gate for that confirmation. That
+was wrong, and the error mattered: PRO-29 could only prove the *pipeline* works,
+never the *tier of the key*, because **no Gemini API call reports the tier of the
+key making it**. The key we hold starts with `AQ.`, which is Google Cloud's newer
+key format, not evidence of billing. The confirmation has to come from the person
+who issued the key, and it is now tracked on its own ticket,
+[PRO-75](/PRO/issues/PRO-75), so a closed ticket cannot swallow it.
+
+The gate is therefore **the first real learner answer, not the first API call.**
+Synthetic-only traffic (`ai:smoke`, eval fixtures, seeded dev data) may run
+against an unconfirmed key; a child's free text may not.
 
 ## Why Gemini rather than Anthropic
 
@@ -177,7 +189,7 @@ line is not the thing that decides the budget; the Langfuse self-host is.
 | --- | --- |
 | Gemini vs Anthropic/OpenAI | **Low.** [PRO-28](/PRO/issues/PRO-28) is the proof: one client file, one rate-card file, one env var. Traces, prompt versions, cost accounting, and redaction are provider-independent by construction. |
 | Developer API vs Vertex AI | **Low-to-medium.** Same models, same SDK family; a different client constructor plus GCP service-account auth. Grows if we start using developer-API-only features — so don't. |
-| Paid tier being sufficient for children's data | **Unrecoverable for data already sent.** This is the asymmetric one. It is why the constraint is enforced at four code sites and gated on [PRO-29](/PRO/issues/PRO-29) rather than trusted. |
+| Paid tier being sufficient for children's data | **Unrecoverable for data already sent.** This is the asymmetric one. It is why the constraint is enforced at four code sites and gated on [PRO-75](/PRO/issues/PRO-75) rather than trusted. |
 | Cost per graded item | **Low, and observable.** `costDetails` goes to Langfuse on every call, so drift shows up on a dashboard before it shows up on a bill. |
 | Single-provider boundary | **Low.** Amend this ADR and the allow-list in `vendor-boundary.test.ts` together. |
 
@@ -196,9 +208,33 @@ Reopen this ADR if any of these happen:
 
 ## Verification status
 
+Updated 22 Sep 2026. The observability claims above are no longer
+implemented-and-unit-tested only; they are end-to-end proven.
+
 - Code, typecheck, and tests: done on [PRO-28](/PRO/issues/PRO-28) (48/48 passing).
-- **A real traced Gemini call has not been made yet** — no key exists. Proving
-  that trace/cost/latency actually land in Langfuse is [PRO-29](/PRO/issues/PRO-29),
-  which is blocked on the founder issuing a billing-enabled `GEMINI_API_KEY`
-  through the Paperclip secret vault. Until that runs, this ADR's observability
-  claims are implemented-and-unit-tested, not end-to-end proven.
+- **A real traced Gemini call has been made and read back.**
+  [PRO-29](/PRO/issues/PRO-29) ran `npm run ai:smoke` against the live key and the
+  self-hosted Langfuse:
+
+  | | |
+  | --- | --- |
+  | Trace | `01a0c7d2-b292-7b26-9404-882e4a78a7c0` on `langfuse.homekup.com` |
+  | Model | `gemini-3.1-flash-lite` |
+  | Tokens | 169 in / 19 out / 0 thinking |
+  | Cost | $0.000071, matching `models.ts` rates at `PRICING_VERSION` 2026-09-18 |
+  | Latency | 1363 ms |
+  | Prompt | `ops/observability-smoke` v1, served from Langfuse (not the repo fallback) |
+
+  The script re-reads `GET /api/public/traces/{id}` before exiting 0, so this is a
+  trace that was stored, not a URL that was printed. That check exists because the
+  instance had been running in `events_only` mode and was silently rejecting every
+  `generation-create` inside an HTTP 207 the SDK swallowed — see
+  [PRO-64](/PRO/issues/PRO-64) / [PRO-72](/PRO/issues/PRO-72).
+
+- **That $0.000071 is not a cost per graded item.** It priced a 169-token smoke
+  prompt. It proves the cost pipeline works; it says nothing about the $0.0045
+  estimate below, which is measured against a real rubric on
+  [PRO-8](/PRO/issues/PRO-8).
+
+- **Still unproven: the tier of the key.** See the correction under "Why the paid
+  tier is not optional" — [PRO-75](/PRO/issues/PRO-75).
