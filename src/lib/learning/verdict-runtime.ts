@@ -20,21 +20,33 @@ import { env } from "@/lib/env";
 
 import { SqlVerdictStore, type VerdictStore } from "./verdict-store";
 
-let override: VerdictStore | null = null;
+/**
+ * The installed store lives on `globalThis`, not in a module `let`.
+ *
+ * Next bundles pages and route handlers separately, so a module-scoped
+ * singleton exists once per bundle. A store installed while a page rendered was
+ * therefore invisible to `POST /api/verdicts/:id/override`, which fell through
+ * to `DATABASE_URL` and answered 500 against a Postgres nobody was running —
+ * the teacher review screens (PRO-77) could render a verdict they could not
+ * then correct. The `pg.Pool` cache below is on `globalThis` for the same
+ * reason.
+ */
+const installed = ((globalThis as unknown as { steamkidVerdictStore?: { store?: VerdictStore | null } })
+  .steamkidVerdictStore ??= {}) as { store?: VerdictStore | null };
 
 /** Point the verdict endpoints at a specific store. Pass `null` to clear it. */
 export function setVerdictStore(store: VerdictStore | null): void {
-  override = store;
+  installed.store = store;
 }
 
 /** As above, but from a raw executor — the usual form in a test. */
 export function setVerdictDb(db: SqlExecutor | null): void {
-  override = db ? new SqlVerdictStore(db) : null;
+  installed.store = db ? new SqlVerdictStore(db) : null;
 }
 
 /** The store for this request, or null when there is no database to write to. */
 export function resolveVerdictStore(): VerdictStore | null {
-  if (override) return override;
+  if (installed.store) return installed.store;
   if (!env.DATABASE_URL) return null;
 
   const cache = globalThis as unknown as { steamkidVerdictPool?: Pool };

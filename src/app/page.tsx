@@ -34,6 +34,13 @@ export default async function HomePage() {
             <ButtonLink href="/consent">เริ่มต้นใช้งาน</ButtonLink>
           )}
         </div>
+        {ready ? (
+          <div className="mt-3 flex justify-center">
+            <ButtonLink href="/me" tone="quiet">
+              ดูการเติบโตของหนู
+            </ButtonLink>
+          </div>
+        ) : null}
         {ready ? null : (
           <p className="mt-3 text-base text-muted">
             ขั้นแรกให้ผู้ปกครองอ่านและยินยอมก่อนนะ ใช้เวลาไม่ถึงหนึ่งนาที
@@ -61,7 +68,8 @@ export default async function HomePage() {
         <h2 className="text-xl font-bold">สำหรับผู้ปกครองและคุณครู</h2>
         <p className="mt-2">
           steamkid กำลังอยู่ระหว่างพัฒนา ตอนนี้ยังไม่มีการตรวจงานเขียนด้วย AI
-          และยังไม่มีแดชบอร์ดการเติบโต เราจะไม่แสดงคะแนนที่ยังไม่ได้ตรวจจริง
+          แดชบอร์ดการเติบโตจะแสดงผลก็ต่อเมื่อมีข้อมูลที่คำนวณไว้จริงเท่านั้น
+          เราจะไม่แสดงคะแนนที่ยังไม่ได้ตรวจจริง
         </p>
         <p className="mt-2">
           หน้าจัดการความยินยอมอยู่ที่{" "}

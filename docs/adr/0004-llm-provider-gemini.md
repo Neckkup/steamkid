@@ -238,3 +238,12 @@ implemented-and-unit-tested only; they are end-to-end proven.
 
 - **Still unproven: the tier of the key.** See the correction under "Why the paid
   tier is not optional" — [PRO-75](/PRO/issues/PRO-75).
+- **Terms re-read 22 Sep 2026** (Gemini API Additional Terms, last modified
+  28 Apr 2026): the free/paid training line is unchanged — paid services are not
+  used to improve Google products; unpaid services are, and may be human-reviewed.
+  The first re-decision trigger has not fired.
+- **Open blocker found on that read: the same terms forbid use in any service
+  "directed towards or … likely to be accessed by individuals under the age of
+  18."** This applies regardless of billing tier and this ADR did not consider it.
+  No real learner text goes through the Gemini developer API until the founder
+  decides the path on [PRO-75](/PRO/issues/PRO-75).

@@ -207,7 +207,21 @@ export function StatusPill({
   );
 }
 
-/** Container used by every page, so line length stays readable on a phone. */
-export function PageShell({ children }: { readonly children: ReactNode }) {
-  return <main className="mx-auto w-full max-w-2xl flex-1 px-4 pb-24 pt-6 sm:px-6">{children}</main>;
+/**
+ * Container used by every page, so line length stays readable on a phone.
+ *
+ * `wide` exists for the teacher screens only. A child's page is a single column
+ * of prose and stays narrow on any display; a teacher comparing thirty children
+ * on a laptop needs the width, and forcing that into 42rem would mean scrolling
+ * past the answer they came for.
+ */
+export function PageShell({
+  children,
+  width = "reading",
+}: {
+  readonly children: ReactNode;
+  readonly width?: "reading" | "wide";
+}) {
+  const max = width === "wide" ? "max-w-5xl" : "max-w-2xl";
+  return <main className={`mx-auto w-full ${max} flex-1 px-4 pb-24 pt-6 sm:px-6`}>{children}</main>;
 }

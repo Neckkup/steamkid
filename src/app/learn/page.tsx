@@ -59,6 +59,12 @@ export default async function LearnPage() {
         })}
       </ol>
 
+      <div className="mt-6 flex justify-center">
+        <ButtonLink href="/me" tone="secondary">
+          ดูว่าหนูเก่งขึ้นเรื่องไหน
+        </ButtonLink>
+      </div>
+
       <Card className="mt-6 border-waiting bg-waiting-soft">
         <p>
           หน่วยนี้วางแผนไว้ 6 บท ตอนนี้เขียนเสร็จแล้ว {lessons.length} บท
