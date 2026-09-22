@@ -7,7 +7,8 @@ import {
   validateBatch,
   type DeadLetterRecord,
 } from "@/lib/events/ingest";
-import { getEventSink } from "@/lib/events/sink";
+import { readLearnerCookie, resolveLearnerId } from "@/lib/events/learner";
+import { getBehaviourDb, resolveEventSink } from "@/lib/events/runtime";
 
 export const dynamic = "force-dynamic";
 
@@ -36,10 +37,20 @@ const MAX_BODY_BYTES = 3 * 1024 * 1024;
  * Consent enforcement and de-duplication live in the sink (PRO-7): both need
  * the learner behind the session cookie, which this endpoint deliberately does
  * not take from the client.
+ *
+ * Three outcomes look identical from the outside, and must:
+ *
+ *   - stored
+ *   - withheld because the guardian did not grant the scope
+ *   - dropped because the cookie matches no learner
+ *
+ * All three answer 202 with the same body shape. A client that could tell them
+ * apart could read one child's consent state from another child's browser.
  */
 export async function POST(request: Request): Promise<Response> {
-  const sink = getEventSink();
-  if (!sink) {
+  const sink = resolveEventSink();
+  const db = getBehaviourDb();
+  if (!sink || !db) {
     // Fail closed rather than accept-and-drop: see `sink.ts`.
     return NextResponse.json({ error: "event_store_unavailable" }, { status: 503 });
   }
@@ -69,11 +80,20 @@ export async function POST(request: Request): Promise<Response> {
     throw error;
   }
 
-  const { accepted, rejected } = validateBatch(batch, new Date().toISOString());
+  const receivedAt = new Date().toISOString();
+  const { accepted, rejected } = validateBatch(batch, receivedAt);
 
-  await sink.accept(accepted);
+  const publicRef = readLearnerCookie(request.headers.get("cookie"));
+  const learnerId = publicRef ? await resolveLearnerId(db, publicRef) : null;
+
+  if (learnerId) {
+    const context = { learnerId, receivedAt };
+    await sink.accept(context, accepted);
+    if (rejected.length > 0) {
+      await sink.deadLetter(context, rejected);
+    }
+  }
   if (rejected.length > 0) {
-    await sink.deadLetter(rejected);
     logRejections(rejected);
   }
 

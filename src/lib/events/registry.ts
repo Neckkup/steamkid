@@ -31,6 +31,13 @@ export interface EventDefinition {
   readonly piiClass: PiiClass;
   readonly retentionDays: number;
   readonly exportable: boolean;
+  /**
+   * Consent scope required before this event may be stored. Absent means
+   * `behaviour_events`, which is true of all but the two consent events —
+   * those are marked `service_operation` because a withdrawal has to be
+   * recordable at the exact moment behaviour consent stops.
+   */
+  readonly requiredConsentScope?: string;
 }
 
 interface RegistryFile {

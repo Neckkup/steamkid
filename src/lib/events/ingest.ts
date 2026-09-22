@@ -27,6 +27,8 @@
 
 import { z } from "zod";
 
+import { uuidv7Timestamp } from "@/lib/ids";
+
 import type { EventEnvelope } from "./envelope";
 import { validateAgainstSchema, type SchemaViolation } from "./json-schema";
 import { countBatch, countRejection } from "./ingest-metrics";
@@ -43,11 +45,26 @@ import { getEventDefinition, REGISTRY_VERSION } from "./registry";
  */
 export const MAX_BATCH_SIZE = 50;
 
+/**
+ * How far in the past an `event_time` may sit and still be believable.
+ *
+ * Seven days because the tracker's retry buffer lives in memory and dies with
+ * the tab (`tracker.ts`), so nothing legitimate can be older than a device that
+ * was suspended over a long weekend. Anything beyond it is a broken clock or a
+ * replay, and either way it does not belong in a partition we pre-created.
+ */
+export const MAX_EVENT_AGE_MS = 7 * 24 * 60 * 60_000;
+
+/** How far ahead of the server clock an `event_time` may sit. */
+export const MAX_EVENT_SKEW_AHEAD_MS = 24 * 60 * 60_000;
+
 /** Why an event was refused. Closed set: these are metric labels and DB values. */
 export type RejectionReason =
   | "malformed_envelope"
   | "unknown_event"
   | "event_version_mismatch"
+  | "invalid_event_id"
+  | "implausible_event_time"
   | "payload_too_large"
   | "payload_too_deep"
   | "oversized_string"
@@ -187,6 +204,32 @@ export function validateEvent(raw: unknown, receivedAt: string):
       payload_shape: describePayload(envelope.payload),
     },
   });
+
+  /**
+   * `event_time` is the UUIDv7 timestamp inside `event_id`, not anything the
+   * client stamped (data-schema §4.1). It is the partition key and part of the
+   * primary key, so both of these are structural, not hygiene:
+   *
+   *   - a v4 id carries no timestamp, so there is no partition to put it in
+   *   - a timestamp outside the pre-created range has no partition either, and
+   *     there is deliberately no DEFAULT partition to catch it
+   *
+   * Refusing here means the insert can never fail on a missing partition.
+   */
+  const eventTimeMs = uuidv7Timestamp(envelope.event_id);
+  if (eventTimeMs === null) {
+    return reject("invalid_event_id", ["event_id is not a UUIDv7"]);
+  }
+
+  const receivedAtMs = Date.parse(receivedAt);
+  if (Number.isFinite(receivedAtMs)) {
+    const ageMs = receivedAtMs - eventTimeMs;
+    if (ageMs > MAX_EVENT_AGE_MS || ageMs < -MAX_EVENT_SKEW_AHEAD_MS) {
+      return reject("implausible_event_time", [
+        `event_time is ${Math.round(ageMs / 60_000)} minutes behind received_at`,
+      ]);
+    }
+  }
 
   const definition = getEventDefinition(envelope.event_name);
   if (!definition) {
