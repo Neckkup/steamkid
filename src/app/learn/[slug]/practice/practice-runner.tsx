@@ -17,7 +17,7 @@
  */
 
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button, ButtonLink, Card, PageShell, StatusPill } from "@/components/ui";
 import type { PublicItem } from "@/content/public";
@@ -33,19 +33,10 @@ import {
   isAnswered,
   type AnswerValue,
 } from "./answer-input";
+import { isFinished, itemAt, summarise, type ItemOutcome } from "./progress";
 
 /** Registry cadence for `item.answer_changed` on text. */
 const TEXT_CHANGE_DEBOUNCE_MS = 800;
-
-type ItemOutcome =
-  | {
-      readonly kind: "graded";
-      readonly result: "correct" | "partial" | "incorrect";
-      readonly explanation: string;
-      readonly attemptsLeft: number;
-    }
-  | { readonly kind: "pending_ai"; readonly pendingReason: string }
-  | { readonly kind: "skipped" };
 
 interface RunnerProps {
   readonly lessonId: string;
@@ -85,8 +76,12 @@ export function PracticeRunner({
    */
   const [tooShortMinChars, setTooShortMinChars] = useState<number | null>(null);
 
-  const item = items[index]!;
-  const finished = index >= items.length;
+  const finished = isFinished(items.length, index);
+  // Clamped, never `undefined`: `index` runs one past the last item to mean
+  // finished, and the hooks below name `item.id` during the same render that
+  // should be showing the summary (PRO-41). `items` is never empty — the page
+  // renders an empty state instead of this component.
+  const item = itemAt(items, index)!;
 
   // Per-item measurement state. Refs, not state: changing them must not
   // re-render, and the values must survive the render that shows a result.
@@ -396,17 +391,7 @@ export function PracticeRunner({
     }
   }
 
-  const summary = useMemo(() => {
-    const values = Object.values(outcomes);
-    return {
-      correct: values.filter((value) => value.kind === "graded" && value.result === "correct")
-        .length,
-      partial: values.filter((value) => value.kind === "graded" && value.result === "partial")
-        .length,
-      waiting: values.filter((value) => value.kind === "pending_ai").length,
-      skipped: values.filter((value) => value.kind === "skipped").length,
-    };
-  }, [outcomes]);
+  const summary = summarise(outcomes);
 
   if (finished) {
     return (
@@ -418,12 +403,24 @@ export function PracticeRunner({
           <ul className="grid gap-2 text-lg">
             <li>ตอบถูกตั้งแต่ครั้งแรกหรือหลังลองใหม่: {summary.correct} ข้อ</li>
             {summary.partial > 0 ? <li>ถูกบางส่วน: {summary.partial} ข้อ</li> : null}
+            {/* Named, not hidden: an unmentioned wrong answer still happened,
+                and a child counting five questions can tell. */}
+            {summary.notYet > 0 ? <li>ยังไม่ถูก ไว้กลับมาลองใหม่: {summary.notYet} ข้อ</li> : null}
             {summary.waiting > 0 ? (
               <li>รอครู AI อ่านงานเขียน: {summary.waiting} ข้อ</li>
             ) : null}
             {summary.skipped > 0 ? <li>ข้ามไว้ก่อน: {summary.skipped} ข้อ</li> : null}
           </ul>
         </Card>
+
+        {summary.notYet > 0 || summary.skipped > 0 ? (
+          <Card tone="brand" className="mt-4">
+            <p>
+              ข้อที่ยังไม่ถูกกับข้อที่ข้ามไว้ ไม่ได้แปลว่าหนูทำไม่ได้นะ
+              กลับไปอ่านบทเรียนอีกรอบแล้วมาลองใหม่ได้เลย
+            </p>
+          </Card>
+        ) : null}
 
         <div className="mt-8 flex flex-col gap-3">
           {hasProject ? (
