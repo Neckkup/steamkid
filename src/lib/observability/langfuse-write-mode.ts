@@ -18,6 +18,15 @@
  * Found on 2026-09-19 (PRO-29) against Langfuse 4.37.0: the version check
  * passed, the hardening checks ran, and the smoke run still produced no trace.
  * A check is cheaper than the next person re-deriving that from a dead link.
+ *
+ * The probe therefore asks two questions, not one. Acceptance is not storage:
+ * `LANGFUSE_MIGRATION_V4_WRITE_MODE` is read by `langfuse-web` *and*
+ * `langfuse-worker`, and flipping only the web service leaves an instance that
+ * takes the batch with a clean 207 and drops it in the worker that never
+ * persists it. That failure looks identical to a working instance from the
+ * ingest side — which is precisely the shape of bug this module already exists
+ * to catch. So after a clean acceptance the probe reads its own trace back, and
+ * only a trace that reads back counts as a pass.
  */
 
 /** Ingestion event types `traceAiCall` emits for every AI call. */
@@ -32,7 +41,9 @@ export type WriteModeStatus =
   | "not_configured"
   | "unreachable"
   | "unauthorized"
-  | "events_only";
+  | "events_only"
+  /** Ingestion accepted the batch, but the trace never became readable. */
+  | "not_readable";
 
 export interface LangfuseWriteModeCheck {
   ok: boolean;
@@ -52,6 +63,10 @@ export interface WriteModeCheckOptions {
   /** Injected in tests; defaults to the global fetch. */
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /** Read-back attempts after a clean acceptance. Tests pass 1. */
+  readBackAttempts?: number;
+  /** Pause between read-back attempts. Tests pass 0 to stay instant. */
+  readBackDelayMs?: number;
 }
 
 const REMEDY =
@@ -60,6 +75,13 @@ const REMEDY =
   "or move this app off the v3 `langfuse` SDK onto a v4 client / OTLP " +
   "ingestion path. Until one of those happens, no AI call in this repo is " +
   "traced — see docs/runbooks/langfuse-self-host.md.";
+
+const READ_BACK_REMEDY =
+  "Most likely LANGFUSE_MIGRATION_V4_WRITE_MODE was changed on langfuse-web " +
+  "but not on langfuse-worker: the web service then accepts the batch and the " +
+  "worker never persists it. Set the same value on BOTH services, restart " +
+  "both, and check `docker compose logs langfuse-worker` for ingestion errors " +
+  "— see docs/runbooks/langfuse-self-host.md.";
 
 /**
  * Probe `/api/public/ingestion` with one deliberately inert event of each type
@@ -192,13 +214,81 @@ export async function checkLangfuseWriteMode(
     };
   }
 
+  // Acceptance is a receipt, not a record. Read the probe trace back before
+  // calling the ingestion path usable — see the module header.
+  const readBack = await traceReadsBack({
+    baseUrl,
+    traceId,
+    fetchImpl,
+    publicKey,
+    secretKey,
+    attempts: options.readBackAttempts ?? 8,
+    delayMs: options.readBackDelayMs ?? 2_000,
+    timeoutMs: options.timeoutMs ?? 10_000,
+  });
+
+  if (!readBack) {
+    return {
+      ok: false,
+      status: "not_readable",
+      rejectedEventTypes: [],
+      reason:
+        `${url} accepted ${REQUIRED_EVENT_TYPES.join(", ")}, but the probe trace ` +
+        `never became readable at /api/public/traces/${traceId}. The instance ` +
+        `takes our events and does not store them, so every AI call still ` +
+        `returns a trace URL that resolves to nothing.`,
+      remedy: READ_BACK_REMEDY,
+    };
+  }
+
   return {
     ok: true,
     status: "ok",
     rejectedEventTypes: [],
-    reason: `${url} accepted ${REQUIRED_EVENT_TYPES.join(", ")}; traces from this app will land.`,
+    reason:
+      `${url} accepted ${REQUIRED_EVENT_TYPES.join(", ")} and the probe trace ` +
+      `read back from /api/public/traces/:id; traces from this app will land.`,
     remedy: null,
   };
+}
+
+/**
+ * Poll the trace read API until the probe trace appears.
+ *
+ * Ingestion is queued and processed by `langfuse-worker`, so a single immediate
+ * read would fail on a perfectly healthy instance. A network flake on one
+ * attempt is likewise not a verdict — only exhausting every attempt is.
+ */
+async function traceReadsBack(options: {
+  baseUrl: string;
+  traceId: string;
+  fetchImpl: typeof fetch;
+  publicKey: string;
+  secretKey: string;
+  attempts: number;
+  delayMs: number;
+  timeoutMs: number;
+}): Promise<boolean> {
+  const url = `${options.baseUrl.replace(/\/$/, "")}/api/public/traces/${options.traceId}`;
+  const authorization = `Basic ${Buffer.from(
+    `${options.publicKey}:${options.secretKey}`,
+  ).toString("base64")}`;
+
+  for (let attempt = 0; attempt < options.attempts; attempt += 1) {
+    if (attempt > 0 && options.delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+    }
+    try {
+      const response = await options.fetchImpl(url, {
+        headers: { authorization, accept: "application/json" },
+        signal: AbortSignal.timeout(options.timeoutMs),
+      });
+      if (response.ok) return true;
+    } catch {
+      // Keep polling; the loop as a whole decides.
+    }
+  }
+  return false;
 }
 
 /**

@@ -215,11 +215,44 @@ Langfuse rather than hoping.
 `assertObservabilityReady()` refuses to boot a `preview` or `production` tier
 without these, which is the intended behaviour: no untraced deployed AI calls.
 
+### 4.1 `LANGFUSE_MIGRATION_V4_WRITE_MODE` must be `dual` — on both services
+
+Langfuse v4 ships a migration switch that decides which ingestion event types the
+instance will store. On the default `events_only` it accepts **only** score and
+log events and refuses `trace-create`, `generation-create` and
+`generation-update` — the three types the `langfuse` v3 JS SDK in our
+`package.json` emits for every AI call.
+
+The refusal arrives *per-event inside an HTTP 207*, which the SDK logs and
+swallows. `flushAsync()` resolves, `callModel()` returns a trace id and a trace
+URL, and every one of those URLs is dead. `events_only` also disables the read
+API (`/api/public/traces/:id` and `/api/public/observations` 404), so nothing
+contradicts the happy-looking output either.
+
+```
+LANGFUSE_MIGRATION_V4_WRITE_MODE=dual
+```
+
+Set it in the compose `.env` on **`langfuse-web` and `langfuse-worker` both**,
+then restart both. Setting it on the web service alone is the nastier version of
+the same bug: the batch is accepted with a clean 207 and the worker never
+persists it, so the instance looks healthy from the ingest side and still stores
+nothing. `checkLangfuseWriteMode` reads its own probe trace back for exactly
+this reason and reports `not_readable` when that happens.
+
+`dual` is an upstream **migration bridge** and will be removed. Moving off
+`langfuse@3.39.2` onto a v4 client is real debt on someone else's clock, not a
+permanent answer.
+
 ## 5. Prove it
 
-- `npm run langfuse:verify` exits 0 — this now covers both "is it v4+, not a v3
-  patch" and "is it hardened enough to hold a child's answer" (§3). Today it
-  exits 1.
+- `npm run langfuse:verify` exits 0 — this now covers "is it v4+, not a v3
+  patch", "will it actually store the events our SDK sends, and can the trace be
+  read back" (§4.1), and "is it hardened enough to hold a child's answer" (§3).
+  Today it exits 1.
+- **Do not close a Langfuse recovery on `200` from `/api/public/health`.** That
+  says the web service answers, not that a trace survives. `langfuse:verify`
+  exiting 0 is the gate.
 - `/api/health` on the deployed app reports `langfuse: true`
 - one graded item produces a visible trace in the Langfuse UI
 - the trace contains the redacted payload shape we expect, not raw identifier
