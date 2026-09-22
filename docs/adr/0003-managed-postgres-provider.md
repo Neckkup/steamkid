@@ -1,10 +1,22 @@
 # ADR 0003 — Managed Postgres provider
 
-- **Status:** accepted (staged — see "Re-decision trigger")
+- **Status:** accepted (staged — see "Re-decision trigger"), amended by [ADR 0005](0005-postgres-access-path.md)
 - **Date:** 2026-09-18
 - **Decided by:** CTO
 - **Issue:** PRO-12
 - **Supersedes:** the `provider TBD` cell in [ADR 0001](0001-stack.md)
+
+> **Correction, 2026-09-22 (PRO-70, first flagged in PRO-16).** Everywhere below,
+> "Supabase" means **Supabase's managed service**. It never meant the self-hosted
+> Supabase that appeared at `supabase.homekup.com` on the founder's machine. That
+> host was drift, not a decision recorded here, and PRO-67 established it was never
+> wired to anything: `DATABASE_URL` only ever held the `.env.example` placeholder.
+>
+> `supabase.homekup.com` is also structurally unusable as an application database —
+> its DNS is an orange-clouded Cloudflare record, which forwards HTTP/HTTPS and
+> never raw 5432. [ADR 0005](0005-postgres-access-path.md) records that finding, the
+> exact connection-string shape to use, and why the obvious one in the Supabase
+> dashboard does not work from our runners.
 
 ## Decision
 
