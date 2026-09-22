@@ -65,6 +65,34 @@ export interface SubmissionRecord {
   readonly verdict: null;
 }
 
+/**
+ * The piece of work a child expects to find when they reopen a project screen.
+ *
+ * Reopening used to show an empty box reading "เขียนแล้ว 0 ตัวอักษร" even right
+ * after pressing send, so a child had no way back to their own writing
+ * (PRO-42). The screen resumes from this record instead.
+ *
+ * "Latest" is by the newest draft, not by insertion order: a store may return
+ * rows in any order, and the record a child means is always the one they wrote
+ * in most recently. A submission with no drafts cannot be the answer — there is
+ * nothing in it to show them.
+ */
+export function latestSubmissionFor(
+  submissions: readonly SubmissionRecord[],
+  itemId: string,
+): SubmissionRecord | undefined {
+  const lastDraftAt = (submission: SubmissionRecord): number =>
+    Date.parse(submission.drafts[submission.drafts.length - 1]?.createdAt ?? "") || 0;
+
+  return submissions
+    .filter((submission) => submission.itemId === itemId && submission.drafts.length > 0)
+    .reduce<SubmissionRecord | undefined>(
+      (best, submission) =>
+        !best || lastDraftAt(submission) >= lastDraftAt(best) ? submission : best,
+      undefined,
+    );
+}
+
 export interface ConsentState {
   readonly policyVersion: string;
   readonly scopes: readonly string[];
