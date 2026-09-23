@@ -142,6 +142,50 @@ ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_app IN SCHEMA identity, app, events, 
 -- runtime role's ability to do its job did not.
 
 -- ---------------------------------------------------------------------------
+-- 4c. The migrator's own CREATE — the other half of the 09:17 damage
+-- ---------------------------------------------------------------------------
+-- Section 4b restored what the *runtime* role lost in the reset and stopped
+-- there, which left the migrator broken in a way nothing looked at.
+--
+-- Section 3 grants the migrator CREATE only implicitly, by making it the owner
+-- of the four schemas. Once they exist, `CREATE SCHEMA IF NOT EXISTS ...
+-- AUTHORIZATION` is a no-op: it does not transfer ownership, so re-running this
+-- file cannot repair that. After the reset handed the schemas to `steamkid_app`,
+-- `steamkid_migrate` held `CREATE` on the *database* but on none of the four
+-- schemas, and a `SET ROLE` probe confirmed it:
+--
+--   CREATE TABLE app.__probe AS steamkid_migrate -> 42501 permission denied
+--                                                   for schema app  (all four)
+--
+-- That is the first statement of the next `prisma migrate deploy`. The cutover
+-- plan hands Backend the migrator credential (step 2) before it reassigns
+-- ownership (step 3), so the window between them would have been a migrator
+-- that cannot migrate — reported as "permission denied for schema app", which
+-- reads like a broken migration rather than a missing grant. We have already
+-- spent one outage on that exact ambiguity today.
+--
+-- Granting it explicitly closes the window and is correct in both directions:
+-- before the cutover it is the only thing giving the migrator DDL, and after
+-- `REASSIGN OWNED` it is redundant with ownership but harmless. Issue this as
+-- the schema owner (`steamkid_app` today) or as `postgres`.
+GRANT USAGE, CREATE ON SCHEMA identity, app, events, ml TO steamkid_migrate;
+
+-- Prisma's ledger, and the same trap one layer down. `public._prisma_migrations`
+-- is owned by `steamkid_app`, and the migrator held nothing on it at all — not
+-- even SELECT. Prisma touches this table before it touches anything else, so
+-- the failure would not have waited for a migration: `prisma migrate status`,
+-- which the cutover uses as its proof that the new credential works, would have
+-- been the thing that broke.
+--
+-- `REASSIGN OWNED` in cutover step 3 does hand this over, but step 2 switches
+-- Backend's credential first. Granting it now means the migrator credential is
+-- complete the moment it is bound, whenever that happens.
+--
+-- `steamkid_runtime` is deliberately not given access: application code has no
+-- business reading or rewriting migration history.
+GRANT SELECT, INSERT, UPDATE, DELETE ON public._prisma_migrations TO steamkid_migrate;
+
+-- ---------------------------------------------------------------------------
 -- 5. Retiring steamkid_app
 -- ---------------------------------------------------------------------------
 -- The combined DDL+DML role from PRO-70.
@@ -159,6 +203,14 @@ ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_app IN SCHEMA identity, app, events, 
 -- Cutover, in this order, once both new bindings are live. Run as `postgres`:
 -- REASSIGN needs membership in both the source and target roles, which neither
 -- steamkid_app nor steamkid_migrate has over the other.
+--
+-- Section 4c changes what this sequence has to guarantee. The approved plan had
+-- Backend switch credentials (its step 2) before REASSIGN (its step 3), which
+-- left a window where the migrator credential was bound but could neither create
+-- a table nor read Prisma's ledger. With 4c applied that window is gone: the
+-- migrator works the moment it is bound, and REASSIGN below is now only about
+-- ownership — ALTER/DROP on the 31 existing tables, and retiring steamkid_app.
+-- The order is still the order; it is no longer load-bearing for Backend.
 --
 --   -- 1. Move the 31 existing objects to the migrator. ACLs travel with the
 --   --    object, so section 4b's grants survive this and do not need rerunning.

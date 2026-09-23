@@ -80,10 +80,17 @@ Neither role may create roles or databases. The grants are:
 | `rolsuper` / `rolcreaterole` / `rolcreatedb` | false / false / false | false / false / false |
 | `CONNECT` on database `postgres` | granted | granted |
 | `CREATE` on database `postgres` | **granted** | **revoked** |
-| `identity`, `app`, `events`, `ml` | owns them; `USAGE, CREATE` | `USAGE` only |
+| `identity`, `app`, `events`, `ml` | `USAGE, CREATE`; owner after cutover step 3 | `USAGE` only |
 | `CREATE` on schema `public` | granted (`_prisma_migrations`) | revoked |
-| Tables in `identity`, `app`, `events` | owner | `SELECT, INSERT, UPDATE, DELETE` |
-| Tables in `ml` | owner | `SELECT` only |
+| `public._prisma_migrations` | `SELECT, INSERT, UPDATE, DELETE` | none |
+| Tables in `identity`, `app`, `events` | owner after cutover step 3 | `SELECT, INSERT, UPDATE, DELETE` |
+| Tables in `ml` | owner after cutover step 3 | `SELECT` only |
+
+The "after cutover step 3" qualifiers are load-bearing. Until `REASSIGN OWNED`
+runs, `steamkid_app` still owns the four schemas and all 31 tables; the migrator
+reaches them through the explicit grants in §4c of `roles.sql`, not through
+ownership. An earlier revision of this table stated the end state flatly and the
+gap between it and the database went unnoticed — see below.
 
 The whole point is the fourth row. `CREATE` on the *database* is what makes "no DDL"
 either true or decorative: a role that can `CREATE SCHEMA` can build itself a schema
@@ -190,6 +197,65 @@ revoked grant.
 Sequencing consequence: the two new bindings must be approved **and** the two
 `steamkid_app` bindings revoked. Dropping the role while those bindings resolve
 would turn a clear `42501` into an authentication failure against a vanished role.
+
+### The migrator could not migrate, and two checks now say so
+
+The `identity`/`app`/`events`/`ml` row of the table above describes the intended
+end state. It was not the state of the database. The 09:17 schema reset that
+handed the four schemas back to `steamkid_app` also took `CREATE` on them away
+from `steamkid_migrate`, and §4b of `roles.sql` — written to repair that reset —
+only restored what the **runtime** role had lost. The migrator was left holding
+`CREATE` on the *database* and on none of the four schemas.
+
+Measured 2026-09-23 by assuming the role and attempting the DDL:
+
+| Attempted as `steamkid_migrate` | Before | After |
+| --- | --- | --- |
+| `CREATE TABLE app.__probe` | `42501 permission denied for schema app` | created |
+| `CREATE TABLE events.__probe` | `42501` | created |
+| `CREATE TABLE identity.__probe` | `42501` | created |
+| `CREATE TABLE ml.__probe` | `42501` | created |
+| `SELECT` on `public._prisma_migrations` | **no privilege at all** | granted |
+
+Two things made this worth more than a one-line fix.
+
+The first is that §3 grants the migrator `CREATE` on the four schemas *only by
+owning them*, and `CREATE SCHEMA IF NOT EXISTS ... AUTHORIZATION` does not
+transfer ownership of a schema that already exists. Re-running `roles.sql`
+therefore could not repair it — the file was silently a no-op in exactly the
+situation it existed to fix. §4c grants it explicitly instead, which is correct
+before the cutover and harmless after it.
+
+The second is where it would have surfaced. Prisma touches
+`public._prisma_migrations` before anything else, so the missing grant would not
+have waited for a migration: `prisma migrate status` is the command the cutover
+uses as its proof that the new credential works, and it would have been the
+thing that failed. The cutover switches Backend's credential (step 2) *before*
+`REASSIGN OWNED` hands these privileges over (step 3), so the gap sat inside the
+approved sequence. Granting both up front removes the window rather than
+narrowing it.
+
+`steamkid_runtime` is deliberately given nothing on the ledger: application code
+has no business reading or rewriting migration history.
+
+### The Supabase API roles are kept out, and that is now asserted
+
+`anon`, `authenticated` and `service_role` are the roles PostgREST assumes for
+requests arriving at the project's public REST endpoint. `anon` requires no
+credential at all. None of them holds `USAGE` on `identity`, `app`, `events` or
+`ml`, and none can reach a table in them.
+
+That isolation is real but it was **incidental**, which is why it is now a
+check. Supabase's own default privileges — visible in `pg_default_acl` under
+grantor `postgres` — grant all three roles full `arwdDxtm` on every new table in
+`public`. Our separation rests entirely on the application's tables living
+outside `public`. A single `GRANT USAGE ON SCHEMA app TO anon`, or one table
+created in `public` instead of `app`, would publish behaviour events to the open
+internet with no authentication step in front of them.
+
+`verify:grants` now fails if any of those three roles gains `USAGE` or any table
+privilege on the four schemas, and if any table other than `_prisma_migrations`
+appears in `public`.
 
 ### `citext` lives in `public`, on purpose
 
@@ -404,10 +470,44 @@ The check that proves this ADR, in order:
    `steamkid_runtime`"*, evaluated per role that currently owns objects — the check
    that catches a migration applied by a role the default privileges were not
    written for, which is exactly how the 09:17 regression above went unnoticed.
-6. `prisma migrate deploy` applies all four migrations unedited as
+6. The migrator can migrate, and PostgREST cannot reach the data — **done
+   2026-09-23**, ten further checks in `verify:grants` (38 total). These close
+   two gaps the first 28 did not look at.
+
+   Checks 5 asked only where a new table *lands*, never whether the migrator
+   could create one; the answer was no, on all four schemas, and on Prisma's
+   ledger it held nothing at all. Checks 8 assert that `anon`, `authenticated`
+   and `service_role` hold no `USAGE` and no table privilege on the four
+   schemas, and that nothing but `_prisma_migrations` sits in `public` — the one
+   schema where Supabase's defaults publish new tables to the open REST
+   endpoint automatically.
+
+   Four of the new checks were made to fail against the live database — revoking
+   the migrator's `CREATE` on `events`, granting `anon` `USAGE` on `app`,
+   revoking the migrator's `SELECT` on the ledger and granting the runtime role
+   one:
+
+   ```
+   FAIL  steamkid_migrate can create in events — 42501 on the next migration — CREATE on the database is not enough
+   FAIL  anon cannot reach the application schemas — EXPOSED — USAGE on app
+   FAIL  steamkid_migrate can use Prisma's migration ledger — missing SELECT — prisma migrate status fails before any migration runs
+   FAIL  steamkid_runtime cannot touch Prisma's migration ledger — REACHABLE: SELECT
+   ```
+
+   Each was restored and the run returned to 38/38, exit 0. The fifth new check,
+   *"no application table sits in `public`"*, could not be fault-injected: no
+   role we hold can create there — `steamkid_app` lacks `CREATE` on `public`
+   and only `steamkid_migrate` has it. That inability is the finding, not a gap
+   in the proof.
+7. `prisma migrate deploy` applies all four migrations unedited as
    `steamkid_migrate`, and `/api/health` reports `database: true` —
-   [PRO-68](/PRO/issues/PRO-68), Backend, once the new bindings are live. The
-   statements that migration 1 opens with were dry-run as the migrator on
-   2026-09-23: `CREATE EXTENSION IF NOT EXISTS citext`/`pgcrypto` short-circuit,
-   `CREATE SCHEMA IF NOT EXISTS` and `COMMENT ON SCHEMA` succeed, and a table can
-   be created in `public` for `_prisma_migrations`.
+   [PRO-68](/PRO/issues/PRO-68), Backend, once the new bindings are live.
+
+   The statements that migration 1 opens with were dry-run as the migrator
+   earlier on 2026-09-23 and all succeeded. **That result expired the same day**
+   and is kept here as a caution rather than as evidence: it was measured while
+   the migrator still owned the four schemas, and the 09:17 reset took that
+   ownership — and with it the `CREATE` the dry-run depended on — away. Re-run
+   as the migrator afterwards, every one of those `CREATE`s returned `42501`.
+   A verification of a privilege is only true as of the moment it ran, which is
+   the argument for `verify:grants` existing at all.

@@ -295,6 +295,148 @@ async function main(): Promise<void> {
         );
       }
     }
+
+    // ---------------------------------------------------------------------
+    // 7. The migrator can actually migrate.
+    //
+    //    Section 6 asks where a new table *lands*. It never asks whether the
+    //    migrator can create one at all, and on 2026-09-23 the answer was no:
+    //    the 09:17 reset gave the four schemas back to `steamkid_app`, and
+    //    section 3 only ever grants the migrator CREATE implicitly, by owning
+    //    them. `CREATE SCHEMA IF NOT EXISTS ... AUTHORIZATION` is a no-op once
+    //    the schema exists, so re-running roles.sql did not put it back.
+    //
+    //    `steamkid_migrate` kept CREATE on the database, which is why nothing
+    //    looked wrong, while `CREATE TABLE app.x` returned 42501. That is the
+    //    first statement of the next `prisma migrate deploy`, and the cutover
+    //    hands Backend this credential before it reassigns ownership.
+    // ---------------------------------------------------------------------
+    const migrateCreate = await client.query<{ schema: string; can_create: boolean }>(
+      `SELECT s AS schema, has_schema_privilege($1, s, 'CREATE') AS can_create
+         FROM unnest($2::text[]) s`,
+      [MIGRATE, ALL_SCHEMAS],
+    );
+    for (const { schema, can_create } of migrateCreate.rows) {
+      check(
+        `${MIGRATE} can create in ${schema}`,
+        can_create,
+        can_create
+          ? "CREATE"
+          : "42501 on the next migration — CREATE on the database is not enough",
+      );
+    }
+
+    // Prisma reads `public._prisma_migrations` before it does anything else,
+    // including in `migrate status`. The migrator held nothing on it — the
+    // cutover's own verification step would have been the thing that failed.
+    // The runtime role must never reach it: application code has no business
+    // reading or rewriting migration history.
+    const ledger = await client.query<{ role: string; privs: string[] | null }>(
+      `SELECT r AS role,
+              array_remove(array_agg(p ORDER BY p) FILTER (
+                WHERE has_table_privilege(r, 'public._prisma_migrations', p)), NULL) AS privs
+         FROM unnest(ARRAY[$1::text, $2::text]) r
+         CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE']) p
+        GROUP BY r`,
+      [MIGRATE, RUNTIME],
+    );
+    const migrateLedger = ledger.rows.find((l) => l.role === MIGRATE)?.privs ?? [];
+    const runtimeLedger = ledger.rows.find((l) => l.role === RUNTIME)?.privs ?? [];
+    const ledgerMissing = ["SELECT", ...WRITE_PRIVILEGES].filter(
+      (p) => !migrateLedger.includes(p),
+    );
+    check(
+      `${MIGRATE} can use Prisma's migration ledger`,
+      ledgerMissing.length === 0,
+      ledgerMissing.length === 0
+        ? migrateLedger.join(", ")
+        : `missing ${ledgerMissing.join(", ")} — prisma migrate status fails before any migration runs`,
+    );
+    check(
+      `${RUNTIME} cannot touch Prisma's migration ledger`,
+      runtimeLedger.length === 0,
+      runtimeLedger.length === 0 ? "no access" : `REACHABLE: ${runtimeLedger.join(", ")}`,
+    );
+
+    // ---------------------------------------------------------------------
+    // 8. The Supabase API roles cannot reach children's data.
+    //
+    //    This is the highest-blast-radius property of the database and until
+    //    now nothing asserted it. `anon`, `authenticated` and `service_role`
+    //    are the roles PostgREST assumes for requests arriving at the public
+    //    Supabase REST endpoint; `anon` needs no credential at all.
+    //
+    //    Today they hold nothing on our four schemas — but by accident, not by
+    //    decision. Supabase's own default privileges hand those three roles
+    //    full DML on every new table in `public` (see `pg_default_acl` for
+    //    grantor `postgres`), so the isolation rests entirely on our tables
+    //    living outside `public`. One `GRANT USAGE ON SCHEMA app TO anon`, or
+    //    one table created in `public` instead of `app`, publishes behaviour
+    //    events to the open internet. Fail closed and loudly.
+    // ---------------------------------------------------------------------
+    const API_ROLES = ["anon", "authenticated", "service_role"] as const;
+    const exposure = await client.query<{
+      role: string;
+      schema: string;
+      usage: boolean;
+      reachable: number;
+    }>(
+      `SELECT r AS role,
+              s AS schema,
+              has_schema_privilege(r, s, 'USAGE') AS usage,
+              (SELECT count(*) FROM pg_tables t
+                WHERE t.schemaname = s
+                  AND (has_table_privilege(r, format('%I.%I', t.schemaname, t.tablename), 'SELECT')
+                    OR has_table_privilege(r, format('%I.%I', t.schemaname, t.tablename), 'INSERT')
+                    OR has_table_privilege(r, format('%I.%I', t.schemaname, t.tablename), 'UPDATE')
+                    OR has_table_privilege(r, format('%I.%I', t.schemaname, t.tablename), 'DELETE'))
+              )::int AS reachable
+         FROM unnest($1::text[]) r CROSS JOIN unnest($2::text[]) s
+        WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r)`,
+      [API_ROLES, ALL_SCHEMAS],
+    );
+
+    for (const role of API_ROLES) {
+      const rows = exposure.rows.filter((e) => e.role === role);
+      if (rows.length === 0) {
+        check(`${role} cannot reach the application schemas`, true, "role does not exist");
+        continue;
+      }
+      const withUsage = rows.filter((e) => e.usage).map((e) => e.schema);
+      const withTables = rows.filter((e) => e.reachable > 0);
+      const ok = withUsage.length === 0 && withTables.length === 0;
+      check(
+        `${role} cannot reach the application schemas`,
+        ok,
+        ok
+          ? "no USAGE, no table privileges"
+          : `EXPOSED — ${[
+              withUsage.length > 0 ? `USAGE on ${withUsage.join(", ")}` : null,
+              withTables.length > 0
+                ? `tables: ${withTables.map((e) => `${e.schema} (${e.reachable})`).join(", ")}`
+                : null,
+            ]
+              .filter(Boolean)
+              .join("; ")}`,
+      );
+    }
+
+    // Our tables must stay out of `public`, because that is the one schema
+    // where Supabase's defaults publish new tables to `anon` automatically.
+    const inPublic = await client.query<{ tablename: string }>(
+      `SELECT tablename FROM pg_tables
+        WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'
+        ORDER BY tablename`,
+    );
+    check(
+      "no application table sits in public",
+      inPublic.rows.length === 0,
+      inPublic.rows.length === 0
+        ? "public holds only _prisma_migrations"
+        : `IN PUBLIC (reachable by anon via PostgREST): ${inPublic.rows
+            .map((t) => t.tablename)
+            .join(", ")}`,
+    );
   } finally {
     await client.end();
   }
