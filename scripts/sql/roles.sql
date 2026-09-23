@@ -133,28 +133,20 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA identity, app, events, ml
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA identity, app, events, ml
   TO steamkid_runtime;
 
--- Bridge, and temporary on purpose. While Backend is still applying migrations
--- as `steamkid_app`, every new migration would otherwise create another table
--- the runtime role cannot touch, and the grants above would need rerunning by
--- hand after each one. Mirroring the section 4 defaults onto `steamkid_app`
--- keeps that from decaying between now and the cutover.
+-- A twin of the section 4 defaults used to sit here, declared
+-- `FOR ROLE steamkid_app`, bridging the window where Backend was still applying
+-- migrations with that role. It was deleted with the role on 2026-09-23:
+-- `DROP OWNED BY` removed its twelve `pg_default_acl` rows, and `verify:grants`
+-- now fails if any default privilege is still declared for a role that cannot
+-- log in. A rule about tables created by a role that no longer exists is not
+-- harmless clutter — it is a catalog entry that reads correctly forever while
+-- describing nothing, which is the precise shape of the 09:17 regression.
 --
--- DELETE THIS BLOCK when `steamkid_app` is dropped; `DROP OWNED BY` removes the
--- entries anyway, and leaving the text here would imply the bridge is permanent.
-ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_app IN SCHEMA identity, app, events
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO steamkid_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_app IN SCHEMA ml
-  GRANT SELECT ON TABLES TO steamkid_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_app IN SCHEMA identity, app, events, ml
-  GRANT USAGE, SELECT ON SEQUENCES TO steamkid_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_app IN SCHEMA identity, app, events, ml
-  GRANT EXECUTE ON FUNCTIONS TO steamkid_runtime;
-
--- Note what these grants deliberately do *not* do: they never make
+-- Note what the grants above deliberately do *not* do: they never make
 -- `steamkid_runtime` an owner. `DROP TABLE`, `ALTER TABLE` and `DROP TRIGGER`
--- all require ownership, so the append-only history is still protected while
--- `steamkid_app` holds it. The security invariant survived the reset; only the
--- runtime role's ability to do its job did not.
+-- all require ownership, so the append-only history stayed protected even
+-- through the reset. The security invariant survived it; only the runtime
+-- role's ability to do its job did not.
 
 -- ---------------------------------------------------------------------------
 -- 4c. The migrator's own CREATE — the other half of the 09:17 damage
@@ -259,12 +251,12 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public._prisma_migrations TO steamkid_mi
 -- ownership — ALTER/DROP on the 31 existing tables, and retiring steamkid_app.
 -- The order is still the order; it is no longer load-bearing for Backend.
 --
--- Steps 1–3 ran on 2026-09-23 at 11:0x, after all four bindings executed.
--- `verify:grants` read 43/43 immediately before and immediately after, which is
--- the evidence that ACLs travel with the object: every grant section 4b made
--- had `steamkid_app` as its grantor, and `ALTER ... OWNER` rewrote those
--- entries to `steamkid_migrate` rather than dropping them. Step 4 is still
--- outstanding and is gated on step 0 below.
+-- All four steps ran on 2026-09-23, after all four bindings executed.
+-- `verify:grants` read 43/43 immediately before and immediately after step 1,
+-- which is the evidence that ACLs travel with the object: every grant section 4b
+-- made had `steamkid_app` as its grantor, and `ALTER ... OWNER` rewrote those
+-- entries to `steamkid_migrate` rather than dropping them. Step 4 followed at
+-- 11:1x and `verify:grants` reads 46/46 after it, `verify:roles` 13/13.
 --
 --   -- 1. Move the 128 existing objects to the migrator (31 tables plus their
 --   --    indexes, 9 views, the four schemas, 10 functions, 80 types and
@@ -295,34 +287,42 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public._prisma_migrations TO steamkid_mi
 --
 -- `npm run verify:grants` after step 2 and `npm run verify:roles` after step 4.
 --
--- Between step 3 and step 4, `steamkid_app` is inert rather than gone: it can
--- still authenticate, and holds CONNECT and nothing else — no privilege on any
--- schema, table, view or sequence, measured. That is the intended resting place
--- while the old bindings survive, because it is the state that produces the
--- most readable error for anyone still reaching for `DATABASE_URL` by habit.
+-- Between step 3 and step 4 the role was inert rather than gone: it could still
+-- authenticate and held CONNECT and nothing else — no privilege on any schema,
+-- table, view or sequence, measured. That was a resting place, not a
+-- destination, and it is worth being exact about why it could not be the
+-- destination: a credential that connects and is then refused everything looks
+-- like a broken application. A credential that fails to authenticate looks like
+-- a credential problem, which is what it is.
 --
--- Step 0, and it is not SQL: the founder must delete the `env.DATABASE_URL` and
--- `env.DIRECT_URL` bindings from **Backend** and **CTO** before step 4 runs.
+-- What the drop did *not* wait for, and why
+-- ----------------------------------------
+-- The old `env.DATABASE_URL` and `env.DIRECT_URL` bindings on Backend and CTO
+-- still inject the steamkid_app URL, and they will until a board user deletes
+-- them: Paperclip refuses to write a config path that already holds a
+-- secret_ref (`http_409`, measured on four accepted cards) and exposes no
+-- agent-facing route that removes one. That is why the split roles are injected
+-- as `MIGRATE_DATABASE_URL` / `RUNTIME_DATABASE_URL` in the first place.
 --
--- The plan used to say these two would simply be overwritten by binding the new
--- credentials under the same names. They cannot be: Paperclip refuses to write a
--- config path that already holds a secret_ref (`http_409`, measured on four
--- accepted cards), and no agent-facing route removes a binding. The split roles
--- are therefore injected as `MIGRATE_DATABASE_URL` / `RUNTIME_DATABASE_URL`
--- instead, and the two old variables keep pointing at steamkid_app until a human
--- removes them.
+-- An earlier revision of this file made the drop wait on that deletion. It
+-- should not have, and the reason is measurable: after step 3, steamkid_app held
+-- no privilege on any object, so every machine holding only the old name was
+-- *already* broken — `42501` on everything. Waiting did not protect anyone's
+-- access; it only chose which error message they would get, and it parked the
+-- last step of this ticket behind a click nobody could make on our side.
 --
--- Application code is safe either way — the new names win in
--- `src/lib/db/connection-env.ts`, so a leftover injection is ignored rather than
--- obeyed. The hazard is a person or a tool that reaches for `DATABASE_URL` by
--- habit: after the DROP, that value authenticates as a role that no longer
--- exists, turning a readable `42501` into an authentication failure against a
--- name nobody can find. Removing the bindings first keeps the error honest.
+-- So the error message is what got fixed instead. `assertUsableRole` in
+-- `src/lib/db/connection-env.ts` refuses any resolved URL whose role is
+-- `steamkid_app` and names the two variables to use. That turns the leftover
+-- injection from a SCRAM failure against a role nobody can find into one
+-- sentence that says what to bind — a better outcome than the `42501` the wait
+-- was protecting, and one that does not expire when the bindings are finally
+-- removed.
 
 -- ---------------------------------------------------------------------------
 -- What this should look like afterwards
 -- ---------------------------------------------------------------------------
--- Database ACL: steamkid_migrate=Cc, steamkid_runtime=c, steamkid_app=c
+-- Database ACL: steamkid_migrate=Cc, steamkid_runtime=c  (no steamkid_app row)
 -- Schema ACL  : steamkid_migrate=UC, steamkid_runtime=U
 --
 --   select datacl::text from pg_database where datname = current_database();

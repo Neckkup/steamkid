@@ -150,10 +150,12 @@ async function main(): Promise<void> {
   console.log(`${migratorUrl.name} → ${migratorUser}`);
   console.log(`${runtimeUrl.name} → ${runtimeUser}`);
 
-  // Both roles are asserted, not just the runtime one. `steamkid_app` can still
-  // run DDL, so a migrator URL that quietly fell back to it would create every
-  // future table under the role this ticket is retiring — which is exactly how
-  // the 09:17 regression happened, and nothing about it looked wrong.
+  // Both roles are asserted, not just the runtime one. A migrator URL that
+  // quietly fell back to `steamkid_app` would have created every future table
+  // under the role this ticket retires — which is exactly how the 09:17
+  // regression happened, and nothing about it looked wrong. `connection-env.ts`
+  // now refuses that URL outright, so this is the second of two fences; it stays
+  // because it asserts what the *server* reports rather than what the URL says.
   //
   // The message is built rather than thrown here: these checks run before the
   // `try`/`finally` that closes the two clients, so throwing directly would leave

@@ -30,6 +30,7 @@
 import { Client } from "pg";
 
 import {
+  RETIRED_ROLE,
   resolveMigrateUrl,
   resolveRuntimeUrl,
   type ResolvedConnectionUrl,
@@ -42,6 +43,8 @@ const ALL_SCHEMAS = [...WRITABLE_SCHEMAS, ...READ_ONLY_SCHEMAS] as const;
 
 const RUNTIME = "steamkid_runtime";
 const MIGRATE = "steamkid_migrate";
+/** The combined DDL+DML role this ticket retires. Section 11 pins its absence. */
+const RETIRED = RETIRED_ROLE;
 
 const WRITE_PRIVILEGES = ["INSERT", "UPDATE", "DELETE"] as const;
 
@@ -588,6 +591,45 @@ async function main(): Promise<void> {
         : `ESCALATION: ${definers.rows
             .map((d) => `${d.fn} runs as ${d.owner}`)
             .join(", ")}`,
+    );
+
+    // ---------------------------------------------------------------------
+    // 11. The combined role is gone, and no default privilege still names it.
+    //
+    //     Two separate facts, because they fail separately. The role itself is
+    //     the credential two agent environments still inject under the old
+    //     `DATABASE_URL` / `DIRECT_URL` names; while it existed, a machine that
+    //     picked up the old name got a working connection with no privileges,
+    //     which is the shape of "the split is undone" that section 4b was
+    //     written to repair after it happened once already.
+    //
+    //     The `pg_default_acl` half is the quieter one. Twelve entries were
+    //     created `FOR ROLE steamkid_app` as a bridge while Backend was still
+    //     migrating with it. `DROP OWNED BY` removes them, and if it did not,
+    //     they would be a rule about tables created by a role that cannot log
+    //     in — invisible, permanently untrue, and exactly the sort of stale
+    //     catalog entry that read correctly all through the 09:17 regression.
+    // ---------------------------------------------------------------------
+    const retired = await client.query<{ exists: boolean; defaults: number }>(
+      `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1) AS exists,
+              (SELECT count(*) FROM pg_default_acl d
+                WHERE d.defaclrole = (SELECT oid FROM pg_roles WHERE rolname = $1)
+              )::int AS defaults`,
+      [RETIRED],
+    );
+    check(
+      `${RETIRED} no longer exists`,
+      !retired.rows[0].exists,
+      retired.rows[0].exists
+        ? "STILL PRESENT — a credential that connects but can do nothing reads as a broken app, not as a retired role"
+        : "dropped",
+    );
+    check(
+      `no default privilege is still declared FOR ROLE ${RETIRED}`,
+      retired.rows[0].defaults === 0,
+      retired.rows[0].defaults === 0
+        ? "the section 4b bridge is gone"
+        : `STALE: ${retired.rows[0].defaults} pg_default_acl entr(y|ies) that can never apply`,
     );
   } finally {
     await client.end();

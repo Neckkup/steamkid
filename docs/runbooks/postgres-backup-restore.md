@@ -72,9 +72,11 @@ Two version rules, both of which cause silent-looking failures if broken:
   snapshot; against the transaction pooler it fails or, worse, produces an
   inconsistent dump.
 - **The variable is `MIGRATE_DATABASE_URL`, and `DIRECT_URL` is only a fallback.**
-  After the PRO-103 cutover, `DIRECT_URL` still carries the retired
-  `steamkid_app`: the split roles had to be injected under new names because a
-  bound config path cannot be overwritten (ADR 0005). The commands below use
+  After the PRO-103 cutover, `DIRECT_URL` still carries `steamkid_app`, which no
+  longer exists as a Postgres role: the split roles had to be injected under new
+  names because a bound config path cannot be overwritten (ADR 0005), and only a
+  board user can delete the stale binding. A `psql "$DIRECT_URL"` will fail to
+  authenticate; that is the wrong URL, not a broken database. The commands below use
   `$DIRECT_URL` as shorthand for whichever of the two is set — resolve it once at
   the top of the session:
 

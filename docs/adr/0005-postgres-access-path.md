@@ -91,11 +91,11 @@ Neither role may create roles or databases. The grants are:
 | Tables in `identity`, `app`, `events` | owner after cutover step 3 | `SELECT, INSERT, UPDATE, DELETE` |
 | Tables in `ml` | owner after cutover step 3 | `SELECT` only |
 
-The "after cutover step 3" qualifiers are load-bearing. Until `REASSIGN OWNED`
-runs, `steamkid_app` still owns the four schemas and all 31 tables; the migrator
-reaches them through the explicit grants in §4c of `roles.sql`, not through
-ownership. An earlier revision of this table stated the end state flatly and the
-gap between it and the database went unnoticed — see below.
+The "after cutover step 3" qualifiers described a gap that is now closed:
+`REASSIGN OWNED` ran on 2026-09-23 and the migrator owns all four schemas and
+every table again. They are kept because an earlier revision of this table stated
+the end state flatly while the database disagreed, and nothing noticed for two
+hours — the qualifier is the habit, not the temporary condition.
 
 The whole point is the fourth row. `CREATE` on the *database* is what makes "no DDL"
 either true or decorative: a role that can `CREATE SCHEMA` can build itself a schema
@@ -156,8 +156,11 @@ owned the tables. What did not survive was the runtime role's ability to do its 
 and the migrator's ability to run migration N+1.
 
 Repaired additively in `roles.sql` §4b — explicit grants on the 31 objects that
-already exist, plus the §4 defaults mirrored onto `steamkid_app` so that migrations
-Backend runs *before* the cutover do not re-open the same hole one table at a time.
+already existed, plus (at the time) the §4 defaults mirrored onto `steamkid_app` so
+that migrations Backend ran *before* the cutover did not re-open the same hole one
+table at a time. That mirror was a bridge and is gone: `DROP OWNED BY` removed its
+twelve `pg_default_acl` rows with the role, and `verify:grants` now fails if any
+default privilege is still declared for a role that cannot log in.
 The ownership transfer is deliberately **not** in that repair: `REASSIGN OWNED`
 would take DDL away from the role Backend is migrating with right now, which is the
 same mistake as revoking `CREATE` mid-flight, made twice. It is step 1 of the
@@ -165,10 +168,11 @@ cutover sequence at the bottom of `roles.sql` instead.
 
 ### `steamkid_app` is retired
 
-The combined DDL+DML role this ADR first shipped. **As of the cutover on
-2026-09-23 it is inert**: it owns nothing, holds no privilege on any schema,
-table, view or sequence, and retains only `CONNECT`. It still exists, and that is
-deliberate — see "The cutover ran" below for why the `DROP ROLE` waits.
+The combined DDL+DML role this ADR first shipped. **As of 2026-09-23 it no longer
+exists**: `DROP OWNED BY steamkid_app; DROP ROLE steamkid_app;` ran after the
+cutover, and `verify:grants` now fails if the role is ever recreated or if any
+default privilege is still declared for it. See "The drop, and what it stopped
+waiting for" below.
 
 The rest of this section describes the state before that, and is kept because the
 sequencing argument in it is the reason the cutover was safe.
@@ -206,9 +210,12 @@ touched. Any agent still holding these two variables gets a connection that open
 and then refuses all DDL, which reads like a broken migration rather than a
 revoked grant.
 
-Sequencing consequence: the two new bindings must be approved **and** the two
-`steamkid_app` bindings revoked. Dropping the role while those bindings resolve
-would turn a clear `42501` into an authentication failure against a vanished role.
+Sequencing consequence, as written at the time: the two new bindings must be
+approved **and** the two `steamkid_app` bindings revoked, because dropping the
+role while those bindings resolve would turn a clear `42501` into an
+authentication failure against a vanished role. The first half held. The second
+half did not survive contact with the fact that no agent can delete a binding —
+see "The drop, and what it stopped waiting for".
 
 ### The migrator could not migrate, and two checks now say so
 
@@ -467,15 +474,50 @@ OWNER` rewrote those entries to `steamkid_migrate` instead of dropping them. No
 The append-only guarantee was never in the blast radius of any of this — what
 moved was the DDL side.
 
-**Steps 2 and 4 of the old sequence are gone or deferred.** Step 2 (Backend
-switches credentials, proven with `prisma migrate status`) stopped being a
-cutover step when §4c granted the migrator schema `CREATE` and ledger access
-directly: Backend's credential works the moment it is bound, whether or not
-ownership has moved. Step 4 (`DROP OWNED` + `DROP ROLE`) is deliberately not
-done, because the founder has not yet deleted the `env.DATABASE_URL` /
-`env.DIRECT_URL` bindings that still carry `steamkid_app`. Dropping the role
-under a live binding replaces a readable `permission denied` with an
-authentication failure against a role name that no longer appears anywhere.
+**Step 2 of the old sequence is gone.** Backend switching credentials, proven
+with `prisma migrate status`, stopped being a cutover step when §4c granted the
+migrator schema `CREATE` and ledger access directly: Backend's credential works
+the moment it is bound, whether or not ownership has moved.
+
+### The drop, and what it stopped waiting for
+
+Step 4 — `DROP OWNED BY steamkid_app; DROP ROLE steamkid_app;` — ran later the
+same day, and it ran **without** waiting for the `env.DATABASE_URL` /
+`env.DIRECT_URL` bindings to be deleted, which the sequence above said it would
+wait for. That is a reversal of a written decision, so here is the argument.
+
+The wait bought exactly one thing: the error message. It was never protecting
+anyone's access, because after step 3 `steamkid_app` held no privilege on any
+object in the database — measured, not assumed:
+
+| As `steamkid_app`, after step 3 | Result |
+| --- | --- |
+| Owned relations / schemas / functions / types | 0, 0, 0, 0 |
+| Explicit grant on any table or view in the four schemas | none |
+| Database ACL | `steamkid_app=c` — `CONNECT`, nothing else |
+| Live connections at the time of the drop | 0 |
+
+So every machine holding only the old variable name was *already* broken; the
+only open question was whether it would find out via `42501 permission denied`
+or via a SCRAM failure. And the deletion could not be done by any agent:
+`/api/secrets/*` and `/api/companies/:id/secrets` both answer `403 Board access
+required`, and the proposal API offers create, list and withdraw only. The last
+step of a ticket was parked behind a click that only a board user could make,
+for the sake of a nicer error string.
+
+**The error string got fixed instead.** `assertUsableRole` in
+`src/lib/db/connection-env.ts` refuses any resolved connection URL whose role is
+`steamkid_app` and names the replacement variables in the message. It fires
+before a socket is opened, so the leftover injection now produces a sentence that
+says what to bind — strictly better than the `42501` the wait was preserving, and
+it keeps working after the bindings are eventually removed. `connection-env.test.ts`
+covers the pooler's `role.project_ref` username form, the bare role name, a
+`role_with_a_longer_name` that merely starts with it, and a libpq keyword string
+the parser cannot read (where it declines to guess and lets the server decide).
+
+The general lesson, which is not about Postgres: **a step that only improves a
+failure message is not a dependency.** When it is the last step of a ticket and
+its precondition is outside the team's reach, fix the message and finish.
 
 #### One more check, because this failure mode has now happened twice
 
@@ -782,21 +824,29 @@ The check that proves this ADR, in order:
    as the migrator afterwards, every one of those `CREATE`s returned `42501`.
    A verification of a privilege is only true as of the moment it ran, which is
    the argument for `verify:grants` existing at all.
-9. The cutover itself — **steps 0.5, 1 and 3 done 2026-09-23 11:0x**, see "The
-   cutover ran" above. Both split credentials bound and injected; `verify:roles`
-   13/13 with the real credentials; ownership of all 128 objects, the four
-   schemas and Prisma's ledger moved to `steamkid_migrate`; `steamkid_app` left
-   holding `CONNECT` and nothing else. `verify:grants` **44/44**, with the new
-   ownership assertion fault-injected and restored.
+9. The cutover itself — **complete 2026-09-23**, see "The cutover ran" and "The
+   drop" above. Both split credentials bound and injected; `verify:roles` 13/13
+   with the real credentials; ownership of all 128 objects, the four schemas and
+   Prisma's ledger moved to `steamkid_migrate`; then `DROP OWNED BY
+   steamkid_app; DROP ROLE steamkid_app;`. `verify:grants` **46/46**, with the
+   ownership assertion fault-injected and restored, and the two new
+   retired-role assertions observed failing against the live database in the
+   minutes before the drop:
+
+   ```
+   FAIL  steamkid_app no longer exists — STILL PRESENT — a credential that connects but can do nothing reads as a broken app, not as a retired role
+   FAIL  no default privilege is still declared FOR ROLE steamkid_app — STALE: 12 pg_default_acl entr(y|ies) that can never apply
+   44/46 checks passed
+   ```
 
    The migrations PRO-68 already applied were applied as `steamkid_app`; they
    are now owned by `steamkid_migrate`, so migration N+1 runs as the migrator
    and lands inside the default privileges rather than outside them — which is
    what step 8's expired dry-run was really about.
 
-   **Outstanding, and it is the founder's:** delete the `env.DATABASE_URL` and
-   `env.DIRECT_URL` bindings from Backend and CTO, after which `DROP OWNED BY
-   steamkid_app; DROP ROLE steamkid_app;` closes this. Nothing in the
-   application reads those two variables any more — `connection-env.ts` prefers
-   the new names — so the wait costs nothing but keeps the error message honest
-   for a human who types `psql $DATABASE_URL` out of habit.
+   **Housekeeping, not a dependency:** the `env.DATABASE_URL` and
+   `env.DIRECT_URL` bindings on Backend and CTO still resolve to the dropped
+   role and only a board user can delete them. Nothing reads those values —
+   `connection-env.ts` prefers the new names and now refuses the old role
+   outright with a message naming the fix — so their removal is tidying, not a
+   precondition for anything.
