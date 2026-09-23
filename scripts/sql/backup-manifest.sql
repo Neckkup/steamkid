@@ -9,6 +9,13 @@
 --
 -- Usage:
 --   psql "$DIRECT_URL" -At -F',' -f scripts/sql/backup-manifest.sql > steamkid-<stamp>.manifest.csv
+--
+-- `src/lib/db/backup-manifest.ts` runs this same file from Node, producing the
+-- same text without psql, and `src/lib/db/restore-drill.test.ts` rehearses a
+-- dump/restore round trip against it — including deliberately broken restores,
+-- so a check here that cannot fail gets caught. If you edit this file, run
+-- `npm run drill:rehearse`; a statement that errors makes the whole drill
+-- useless at the moment it is needed.
 
 \pset footer off
 

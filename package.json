@@ -21,6 +21,7 @@
     "events:taxonomy": "tsx scripts/event-taxonomy-doc.ts",
     "db:setup": "npm run db:migrate && npm run db:seed:registry",
     "verify:pipeline": "tsx scripts/verify-behaviour-pipeline.ts",
+    "drill:rehearse": "tsx scripts/restore-drill.ts",
     "browser:setup": "bash scripts/setup-browser.sh",
     "browser:check": "bash scripts/setup-browser.sh --check",
     "visual:audit": "bash -c 'eval \"$(bash scripts/setup-browser.sh)\" && tsx scripts/visual-audit.ts \"$@\"' --",
