@@ -89,7 +89,7 @@ they are never committed and never pasted into an issue comment.
 | Variable | Where it is needed |
 | --- | --- |
 | `APP_ENV`, `APP_URL` | all deployed environments |
-| `DATABASE_URL`, `DIRECT_URL` | runtime + migrations |
+| `RUNTIME_DATABASE_URL`, `MIGRATE_DATABASE_URL` | runtime + migrations — two different Postgres roles (ADR 0005). `DATABASE_URL`/`DIRECT_URL` are accepted as fallbacks and are what a local checkout sets; the names above win when both are present |
 | `AUTH_SECRET` | runtime |
 | `GEMINI_API_KEY` | server only (paid-tier auth key — see ADR 0004) |
 | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASEURL` | runtime |

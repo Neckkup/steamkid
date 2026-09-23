@@ -67,10 +67,21 @@ Two version rules, both of which cause silent-looking failures if broken:
 - `pg_dump` major version must be **≥ the server's** major version. Pin the client
   image to the server's major (check it once with `SELECT version();` and record it
   in §6), do not rely on the runner image's default.
-- The dump must use **`DIRECT_URL` (pooler port 5432, session mode)**, never
-  `DATABASE_URL` (port 6543, transaction mode). `pg_dump` needs a session-long
+- The dump must use the **migrator URL (pooler port 5432, session mode)**, never
+  the runtime one (port 6543, transaction mode). `pg_dump` needs a session-long
   snapshot; against the transaction pooler it fails or, worse, produces an
   inconsistent dump.
+- **The variable is `MIGRATE_DATABASE_URL`, and `DIRECT_URL` is only a fallback.**
+  After the PRO-103 cutover, `DIRECT_URL` still carries the retired
+  `steamkid_app`: the split roles had to be injected under new names because a
+  bound config path cannot be overwritten (ADR 0005). The commands below use
+  `$DIRECT_URL` as shorthand for whichever of the two is set — resolve it once at
+  the top of the session:
+
+  ```bash
+  DIRECT_URL="${MIGRATE_DATABASE_URL:-$DIRECT_URL}"
+  psql "$DIRECT_URL" -Atc 'select current_user'   # must print steamkid_migrate
+  ```
 
 ### 3.2 The command
 

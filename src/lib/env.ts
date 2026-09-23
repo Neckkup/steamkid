@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { resolveMigrateUrl, resolveRuntimeUrl } from "@/lib/db/connection-env";
+
 /**
  * Single source of truth for configuration.
  *
@@ -32,9 +34,17 @@ const schema = z.object({
     (value) => value ?? "http://localhost:3000",
   ),
 
-  /** Postgres connection string (pooled). */
+  /**
+   * Postgres connection string (pooled), role `steamkid_runtime`.
+   *
+   * `RUNTIME_DATABASE_URL` is the injected name and wins over this one; see
+   * `src/lib/db/connection-env.ts` and `readEnv` below.
+   */
   DATABASE_URL: blankAsUndefined(z.string().min(1)),
-  /** Direct (unpooled) Postgres connection string, used by migrations. */
+  /**
+   * Direct (unpooled) Postgres connection string, used by migrations, role
+   * `steamkid_migrate`. `MIGRATE_DATABASE_URL` is the injected name and wins.
+   */
   DIRECT_URL: blankAsUndefined(z.string().min(1)),
 
   /** Auth.js session secret. */
@@ -114,7 +124,19 @@ const schema = z.object({
 export type Env = z.infer<typeof schema>;
 
 /**
- * The process environment, with the one name we know drifts folded in.
+ * The process environment, with the names we know drift folded in.
+ *
+ * ## The two Postgres roles
+ *
+ * `MIGRATE_DATABASE_URL` and `RUNTIME_DATABASE_URL` are the names the split
+ * roles are injected under (PRO-103); `DIRECT_URL` and `DATABASE_URL` are the
+ * names the rest of this codebase uses and the names a local checkout sets. The
+ * new name wins, because after the cutover the old one still carries the
+ * retiring combined `steamkid_app` credential — see
+ * `src/lib/db/connection-env.ts` for why the binding could not simply be
+ * replaced under the old name.
+ *
+ * ## Langfuse
  *
  * `LANGFUSE_BASEURL` (no underscore) is the name the Langfuse SDK itself uses
  * and the name every doc and script in this repo uses. Secret injection in our
@@ -128,7 +150,15 @@ export type Env = z.infer<typeof schema>;
  */
 function readEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const baseUrl = source.LANGFUSE_BASEURL?.trim() || source.LANGFUSE_BASE_URL?.trim();
-  return baseUrl ? { ...source, LANGFUSE_BASEURL: baseUrl } : source;
+  const migrate = resolveMigrateUrl(source);
+  const runtime = resolveRuntimeUrl(source);
+
+  return {
+    ...source,
+    ...(baseUrl ? { LANGFUSE_BASEURL: baseUrl } : {}),
+    ...(migrate ? { DIRECT_URL: migrate.url } : {}),
+    ...(runtime ? { DATABASE_URL: runtime.url } : {}),
+  };
 }
 
 const parsed = schema.safeParse(readEnv(process.env));

@@ -18,6 +18,7 @@
 
 import { Pool } from "pg";
 
+import { resolveMigrateUrl } from "../src/lib/db/connection-env";
 import { pgConnectionOptions } from "../src/lib/db/pg-connection";
 
 /** Alert threshold. A month of warning is enough for a human to notice. */
@@ -33,19 +34,23 @@ async function main(): Promise<void> {
   const checkOnly = args.includes("--check");
   const months = Number(args.find((a) => /^\d+$/.test(a)) ?? 3);
 
-  // `DIRECT_URL` first, and not as a fallback ordering: creating a partition is
-  // DDL. Under the PRO-103 role split `DATABASE_URL` carries `steamkid_runtime`,
-  // which has no CREATE anywhere — and `events.ensure_partition_runway` is not
-  // SECURITY DEFINER, deliberately, so EXECUTE on it grants the runtime role
-  // nothing it could not already do. Pointing a scheduler at `DATABASE_URL`
-  // therefore fails with 42501 on the one day of the month it matters. This is
-  // maintenance, so it runs with the migrator credential.
-  const connectionString = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
-  if (!connectionString) {
-    throw new Error("DIRECT_URL is not set (DATABASE_URL is not a substitute — see above).");
+  // The migrator credential only, with no fallback to the runtime one: creating
+  // a partition is DDL. Under the PRO-103 role split `steamkid_runtime` has no
+  // CREATE anywhere — and `events.ensure_partition_runway` is not SECURITY
+  // DEFINER, deliberately, so EXECUTE on it grants the runtime role nothing it
+  // could not already do. Pointing a scheduler at the runtime URL therefore
+  // fails with 42501 on the one day of the month it matters, and a month of
+  // behaviour events has nowhere to land. Data we do not capture is gone for
+  // good, so this refuses to run rather than fall back.
+  const migrate = resolveMigrateUrl(process.env);
+  if (!migrate) {
+    throw new Error(
+      "Neither MIGRATE_DATABASE_URL nor DIRECT_URL is set. The runtime URL is not " +
+        "a substitute — see above.",
+    );
   }
 
-  const pool = new Pool(pgConnectionOptions(connectionString));
+  const pool = new Pool(pgConnectionOptions(migrate.url));
   try {
     if (!checkOnly) {
       const { rows } = await pool.query<{ partition_name: string; created: boolean }>(

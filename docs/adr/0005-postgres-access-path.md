@@ -21,8 +21,13 @@ are not the ones Supabase shows first in its dashboard:
 
 | Variable | Endpoint | Port | Mode | Login role |
 | --- | --- | --- | --- | --- |
-| `DATABASE_URL` | `aws-0-ap-southeast-1.pooler.supabase.com` | 6543 | transaction, append `&pgbouncer=true&connection_limit=1` | `steamkid_runtime.<project-ref>` |
-| `DIRECT_URL` | `aws-0-ap-southeast-1.pooler.supabase.com` | 5432 | session — this is what `prisma migrate deploy` uses | `steamkid_migrate.<project-ref>` |
+| `RUNTIME_DATABASE_URL` | `aws-0-ap-southeast-1.pooler.supabase.com` | 6543 | transaction, append `&pgbouncer=true&connection_limit=1` | `steamkid_runtime.<project-ref>` |
+| `MIGRATE_DATABASE_URL` | `aws-0-ap-southeast-1.pooler.supabase.com` | 5432 | session — this is what `prisma migrate deploy` uses | `steamkid_migrate.<project-ref>` |
+
+`DATABASE_URL` and `DIRECT_URL` are accepted as fallbacks and are the names a
+local checkout uses; the two above are the names the split roles are injected
+under and they win when both are set. See "The split roles are injected under new
+variable names" below for why the old paths could not simply be rebound.
 
 **Two roles, not one** — see "The roles" below. The `aws-0` prefix is measured, not
 guessed: `aws-1-ap-southeast-1` resolves and accepts TCP but answers
@@ -75,7 +80,7 @@ Neither role may create roles or databases. The grants are:
 
 | | `steamkid_migrate` | `steamkid_runtime` |
 | --- | --- | --- |
-| Carried by | `DIRECT_URL` (5432, session) | `DATABASE_URL` (6543, transaction) |
+| Carried by | `MIGRATE_DATABASE_URL` (5432, session) | `RUNTIME_DATABASE_URL` (6543, transaction) |
 | Used by | `prisma migrate deploy`, and nothing else | the application, and nothing else |
 | `rolsuper` / `rolcreaterole` / `rolcreatedb` | false / false / false | false / false / false |
 | `CONNECT` on database `postgres` | granted | granted |
@@ -315,8 +320,10 @@ like it would break is monthly partition creation: `events.ensure_month_partitio
 issues `CREATE TABLE ... PARTITION OF`, it is `SECURITY INVOKER`, and
 `steamkid_runtime` has no `CREATE` anywhere — so called on the runtime
 connection it fails with `42501` and behaviour events for the new month have
-nowhere to land. `scripts/ensure-partitions.ts` already requires `DIRECT_URL`
-and refuses to fall back to `DATABASE_URL`, so this is closed. It is recorded
+nowhere to land. `scripts/ensure-partitions.ts` now resolves the migrator URL
+only and refuses to fall back to the runtime one, so this is closed — see the
+correction below, where the file said exactly that while the code still fell
+back. It is recorded
 here because the failure would arrive at a month boundary, long after anyone
 connected it to a role change, and "data you don't capture today is gone
 forever" is the one loss this schema cannot undo.
@@ -346,6 +353,66 @@ FAIL  no SECURITY DEFINER function is executable by steamkid_runtime — ESCALAT
 ```
 
 after which `relacl` was compared before and after and restored byte for byte.
+
+### The split roles are injected under new variable names, because a binding cannot be replaced
+
+The plan said the two new credentials would be bound under the existing
+`env.DATABASE_URL` and `env.DIRECT_URL`, on the reasoning that reusing the name
+replaces the value and therefore leaves no stale binding pointing at the retiring
+role. That reasoning was wrong about the mechanism.
+
+All four binding cards were accepted by the founder and all four then failed to
+execute, with `resolutionReason: "Interaction acceptance failed: http_409"` and
+`appliedBindingConfigPath: null`. Acceptance is not execution. A config path that
+already holds a `secret_ref` is a conflict: Paperclip adds bindings, it does not
+overwrite them, and there is no agent-facing route to remove one
+(`/api/companies/:id/secrets` and `/api/secrets/*` answer `403 Board access
+required`; the proposal API exposes only create, list, and withdraw).
+
+So the split roles get their own names:
+
+| Injected name | Role | Falls back to |
+| --- | --- | --- |
+| `MIGRATE_DATABASE_URL` | `steamkid_migrate` (5432, session) | `DIRECT_URL` |
+| `RUNTIME_DATABASE_URL` | `steamkid_runtime` (6543, transaction) | `DATABASE_URL` |
+
+`src/lib/db/connection-env.ts` holds the precedence and nothing else, so
+`prisma.config.ts` — which cannot import `src/lib/env.ts` — resolves it the same
+way the application does. `src/lib/env.ts` folds the result back into
+`DATABASE_URL`/`DIRECT_URL`, so no other file in the repo changes.
+
+**The new name wins when both are set, and that ordering is load-bearing.** After
+the cutover the runner still injects `DATABASE_URL`/`DIRECT_URL` carrying
+`steamkid_app`, because only the founder can remove those two bindings. If the
+old name won, or if the two were merely equal alternatives, a leftover injection
+would silently undo the role split — the same class of failure as the 09:17
+regression, where every catalog reading looked correct while the wrong role owned
+everything.
+
+Keeping the old names as a fallback is what lets a plain local Postgres, CI, and
+a fresh clone stay on one URL. The cost is that a missing new binding degrades to
+the retiring credential instead of failing. That is closed in the check rather
+than in the wiring: `verify:roles` prints which variable supplied each value and
+then asserts `current_user` on both connections — it already refused a runtime
+URL that was not `steamkid_runtime`, and it now refuses a migrator URL that is
+not `steamkid_migrate`. A silent fallback becomes a named failure at the one
+moment it matters.
+
+Two defects in that script were found while proving this, both of which would
+have made the cutover check useless:
+
+- It built its clients from a raw connection string instead of
+  `pgConnectionOptions`, so against the pooler it died with `self-signed
+  certificate in certificate chain` — a TLS error that reads like an outage, on
+  the check whose job is to be unambiguous about privileges.
+- All three pre-flight assertions threw *before* the `try`/`finally` that closes
+  the two clients, so the process hung with two open connections instead of
+  exiting non-zero. It now exits 1 with the role names it actually saw.
+
+`scripts/ensure-partitions.ts` was corrected in the same pass: its comment said
+the runtime URL "is not a substitute", while the code read
+`process.env.DIRECT_URL ?? process.env.DATABASE_URL` and would have used it. It
+now resolves the migrator URL only and refuses to start without it.
 
 ### `citext` lives in `public`, on purpose
 

@@ -12,8 +12,16 @@
  *
  * It needs two credentials, both from the Paperclip vault, never from the repo:
  *
- *   DIRECT_URL    session mode (5432), role `steamkid_migrate`  — creates the fixture
- *   DATABASE_URL  transaction mode (6543), role `steamkid_runtime` — is the subject
+ *   MIGRATE_DATABASE_URL (or DIRECT_URL)   session mode (5432), role
+ *                                          `steamkid_migrate` — creates the fixture
+ *   RUNTIME_DATABASE_URL (or DATABASE_URL) transaction mode (6543), role
+ *                                          `steamkid_runtime` — is the subject
+ *
+ * Two accepted names each, new one first, because the old two are still bound to
+ * the retiring `steamkid_app` (`src/lib/db/connection-env.ts`). This script
+ * prints which variable supplied each value and then asserts the role the server
+ * reports, so reading the wrong one shows up here as a named failure instead of
+ * as thirteen checks that pass for the wrong reason.
  *
  * The fixture is a throwaway table in `events`, created by the migrator, and it
  * is dropped again at the end. It lives in a real application schema on purpose:
@@ -29,6 +37,16 @@ import { randomBytes } from "node:crypto";
 
 import { Client } from "pg";
 
+import {
+  describeNames,
+  MIGRATE_URL_NAMES,
+  resolveConnectionUrl,
+  RUNTIME_URL_NAMES,
+  type ConnectionUrlName,
+  type ResolvedConnectionUrl,
+} from "../src/lib/db/connection-env";
+import { pgConnectionOptions } from "../src/lib/db/pg-connection";
+
 /** Postgres `insufficient_privilege`. The only rejection we accept as proof. */
 const INSUFFICIENT_PRIVILEGE = "42501";
 
@@ -41,14 +59,15 @@ type Check = {
 
 type Result = Check & { readonly passed: boolean; readonly detail: string };
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value || value.trim() === "") {
+function requireUrl(names: readonly ConnectionUrlName[]): ResolvedConnectionUrl {
+  const resolved = resolveConnectionUrl(process.env, names);
+  if (!resolved) {
     throw new Error(
-      `${name} is not set. Both roles come from the Paperclip vault; see ADR 0005.`,
+      `Neither ${describeNames(names)} is set. Both roles come from the Paperclip ` +
+        `vault; see ADR 0005.`,
     );
   }
-  return value;
+  return resolved;
 }
 
 /**
@@ -107,8 +126,15 @@ async function run(client: Client, check: Check): Promise<Result> {
 }
 
 async function main(): Promise<void> {
-  const migrator = new Client({ connectionString: requireEnv("DIRECT_URL") });
-  const runtime = new Client({ connectionString: requireEnv("DATABASE_URL") });
+  const migratorUrl = requireUrl(MIGRATE_URL_NAMES);
+  const runtimeUrl = requireUrl(RUNTIME_URL_NAMES);
+  // Through `pgConnectionOptions`, not a raw connection string: `pg` 8.23 reads
+  // `sslmode=require` as `verify-full` and Supabase's pooler presents a
+  // self-signed chain, so a raw string dies with "self-signed certificate in
+  // certificate chain" — a TLS error that reads like an outage, on a check whose
+  // whole job is to be unambiguous about privileges.
+  const migrator = new Client(pgConnectionOptions(migratorUrl.url));
+  const runtime = new Client(pgConnectionOptions(runtimeUrl.url));
 
   // A fresh name per run, so a crashed earlier run cannot make this one pass by
   // colliding with leftovers.
@@ -121,20 +147,35 @@ async function main(): Promise<void> {
   const migratorUser = await currentUser(migrator);
   const runtimeUser = await currentUser(runtime);
 
-  console.log(`DIRECT_URL   → ${migratorUser}`);
-  console.log(`DATABASE_URL → ${runtimeUser}`);
+  console.log(`${migratorUrl.name} → ${migratorUser}`);
+  console.log(`${runtimeUrl.name} → ${runtimeUser}`);
 
-  if (migratorUser === runtimeUser) {
-    throw new Error(
-      `Both URLs authenticate as "${runtimeUser}". That is the single-role setup ` +
-        `PRO-103 exists to remove; there is nothing to verify.`,
-    );
-  }
-  if (runtimeUser !== "steamkid_runtime") {
-    throw new Error(
-      `DATABASE_URL authenticates as "${runtimeUser}", not steamkid_runtime. ` +
-        `The application must never hold the migrator credential.`,
-    );
+  // Both roles are asserted, not just the runtime one. `steamkid_app` can still
+  // run DDL, so a migrator URL that quietly fell back to it would create every
+  // future table under the role this ticket is retiring — which is exactly how
+  // the 09:17 regression happened, and nothing about it looked wrong.
+  //
+  // The message is built rather than thrown here: these checks run before the
+  // `try`/`finally` that closes the two clients, so throwing directly would leave
+  // both connections open and Node would hang instead of exiting non-zero. A
+  // check that hangs is worse than one that fails.
+  const preflight =
+    migratorUser === runtimeUser
+      ? `Both URLs authenticate as "${runtimeUser}". That is the single-role setup ` +
+        `PRO-103 exists to remove; there is nothing to verify.`
+      : runtimeUser !== "steamkid_runtime"
+        ? `${runtimeUrl.name} authenticates as "${runtimeUser}", not steamkid_runtime. ` +
+          `The application must never hold the migrator credential.`
+        : migratorUser !== "steamkid_migrate"
+          ? `${migratorUrl.name} authenticates as "${migratorUser}", not ` +
+            `steamkid_migrate. Migrations must not run as any other role — every ` +
+            `object they create would be owned by it.`
+          : null;
+
+  if (preflight) {
+    await migrator.end();
+    await runtime.end();
+    throw new Error(preflight);
   }
 
   try {

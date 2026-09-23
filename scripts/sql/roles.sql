@@ -256,9 +256,24 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public._prisma_migrations TO steamkid_mi
 --   DROP ROLE steamkid_app;
 --
 -- `npm run verify:grants` after step 2 and `npm run verify:roles` after step 4.
--- Do not drop the role before the bindings are gone: a dropped role turns a
--- readable `42501` into an authentication failure against a name that no longer
--- exists, which is far harder to diagnose.
+--
+-- Step 0, and it is not SQL: the founder must delete the `env.DATABASE_URL` and
+-- `env.DIRECT_URL` bindings from **Backend** and **CTO** before step 4 runs.
+--
+-- The plan used to say these two would simply be overwritten by binding the new
+-- credentials under the same names. They cannot be: Paperclip refuses to write a
+-- config path that already holds a secret_ref (`http_409`, measured on four
+-- accepted cards), and no agent-facing route removes a binding. The split roles
+-- are therefore injected as `MIGRATE_DATABASE_URL` / `RUNTIME_DATABASE_URL`
+-- instead, and the two old variables keep pointing at steamkid_app until a human
+-- removes them.
+--
+-- Application code is safe either way — the new names win in
+-- `src/lib/db/connection-env.ts`, so a leftover injection is ignored rather than
+-- obeyed. The hazard is a person or a tool that reaches for `DATABASE_URL` by
+-- habit: after the DROP, that value authenticates as a role that no longer
+-- exists, turning a readable `42501` into an authentication failure against a
+-- name nobody can find. Removing the bindings first keeps the error honest.
 
 -- ---------------------------------------------------------------------------
 -- What this should look like afterwards

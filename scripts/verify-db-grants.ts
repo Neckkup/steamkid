@@ -29,6 +29,12 @@
 
 import { Client } from "pg";
 
+import {
+  resolveMigrateUrl,
+  resolveRuntimeUrl,
+  type ResolvedConnectionUrl,
+} from "../src/lib/db/connection-env";
+
 /** The schemas the application owns. `ml` is deliberately not like the others. */
 const WRITABLE_SCHEMAS = ["identity", "app", "events"] as const;
 const READ_ONLY_SCHEMAS = ["ml"] as const;
@@ -55,21 +61,28 @@ function check(name: string, passed: boolean, detail: string): void {
  * is the only one available while the new secrets sit in the approval queue.
  * Privilege lookups in `pg_catalog` are readable by any role that can connect.
  */
-function connectionString(): string {
-  const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
-  if (!url || url.trim() === "") {
+function connection(): ResolvedConnectionUrl {
+  const resolved = resolveMigrateUrl(process.env) ?? resolveRuntimeUrl(process.env);
+  if (!resolved) {
     throw new Error(
-      "Neither DIRECT_URL nor DATABASE_URL is set. Both come from the Paperclip vault; see ADR 0005.",
+      "No Postgres URL is set (MIGRATE_DATABASE_URL, DIRECT_URL, " +
+        "RUNTIME_DATABASE_URL or DATABASE_URL). They come from the Paperclip vault; " +
+        "see ADR 0005.",
     );
   }
   // pg 8.23 reads `sslmode=require` as `verify-full`, which Supabase's pooler
   // chain fails with a self-signed-certificate error that reads like an outage.
   // ADR 0005 carries the CA-pinning follow-up; this keeps the check runnable.
-  return url.includes("uselibpqcompat") ? url : `${url}&uselibpqcompat=true`;
+  const url = resolved.url.includes("uselibpqcompat")
+    ? resolved.url
+    : `${resolved.url}&uselibpqcompat=true`;
+  return { name: resolved.name, url };
 }
 
 async function main(): Promise<void> {
-  const client = new Client({ connectionString: connectionString() });
+  const source = connection();
+  console.log(`read via ${source.name}\n`);
+  const client = new Client({ connectionString: source.url });
   await client.connect();
 
   try {

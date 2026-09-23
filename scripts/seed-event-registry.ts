@@ -17,6 +17,7 @@
 
 import { Pool } from "pg";
 
+import { resolveRuntimeUrl } from "../src/lib/db/connection-env";
 import { pgConnectionOptions } from "../src/lib/db/pg-connection";
 import registryFile from "../src/lib/events/event-registry.v1.json";
 import {
@@ -91,12 +92,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    throw new Error("DATABASE_URL is not set. Use --print to emit SQL instead.");
+  // The registry is ordinary rows, so the runtime credential is the right one.
+  const runtime = resolveRuntimeUrl(process.env);
+  if (!runtime) {
+    throw new Error(
+      "Neither RUNTIME_DATABASE_URL nor DATABASE_URL is set. Use --print to emit SQL instead.",
+    );
   }
 
-  const pool = new Pool(pgConnectionOptions(connectionString));
+  const pool = new Pool(pgConnectionOptions(runtime.url));
   try {
     for (const row of rows) {
       await pool.query(UPSERT, row);
