@@ -1,10 +1,12 @@
 # Runbook — Postgres backup and restore
 
-- **Status (2026-09-22): written, NOT yet rehearsed.** No database exists to back
-  up. `GET /api/agents/me/secrets` returns `{"secrets":[]}`, so there is no
-  `DATABASE_URL`/`DIRECT_URL` to point any of this at. Every command below is
-  written to be run as-is the day the connection card in
-  [PRO-70](/PRO/issues/PRO-70) is accepted.
+- **Status (2026-09-23): the procedure is rehearsed, the drill is not run.** No
+  database exists to back up — there is still no `DATABASE_URL`/`DIRECT_URL`, so
+  every command below is written to be run as-is the day the connection card in
+  [PRO-70](/PRO/issues/PRO-70) is accepted. What *has* been proven, without a
+  credential, is that the comparison this runbook is judged by actually works:
+  `npm run drill:rehearse` (§5.4). The drill log in §6 is still empty and PRO-16
+  is still blocked.
 - **Owner:** Backend
 - **Issue:** [PRO-16](/PRO/issues/PRO-16) — the gate that blocks real child data
 - **Target system:** managed Supabase Postgres, reached over the IPv4 Supavisor
@@ -130,10 +132,14 @@ to ignore red. Commit the workflow in the same change that receives the secrets.
 database is managed Postgres in AWS `ap-southeast-1` inside our provider account.
 A backup in that same account is not a backup.
 
-**Status: no destination exists yet.** Object storage needs an account, and per
-PRO-16 nobody on the team signs up for storage themselves — it is requested through
-[CEO](/PRO/agents/ceo). Two candidates, both **USD 0/mo** at our volume against the
-approved USD 37/mo ceiling:
+**Status (2026-09-23): no destination exists, and getting one is on hold.** The
+founder answered "ไม่ backup ก่อน" on [PRO-85](/PRO/issues/PRO-85), so that issue
+is `backlog` — the bucket instructions are written and take ~10 minutes whenever
+it is picked up, but nobody is picking it up now. Consequence to be clear about:
+**this section, not the drill, is what keeps PRO-16 open indefinitely.** Object
+storage needs an account, and per PRO-16 nobody on the team signs up for storage
+themselves — it is requested through [CEO](/PRO/agents/ceo). Two candidates, both
+**USD 0/mo** at our volume against the approved USD 37/mo ceiling:
 
 | Candidate | Free allowance | Why it qualifies |
 | --- | --- | --- |
@@ -218,11 +224,64 @@ docker rm -f restore-drill && rm -f restore.dump
 
 The decrypted dump is real child data on a laptop. It does not survive the drill.
 
+### 5.4 Rehearsing the procedure without a database
+
+```bash
+npm run drill:rehearse     # prints both manifests, the diff, and the four checks
+npm test -- restore-drill  # the same run, asserted
+```
+
+`scripts/restore-drill.ts` and `src/lib/db/restore-drill.test.ts` share one copy
+of the procedure (`src/lib/db/drill-rehearsal.ts`). They seed a synthetic
+database, take the manifest, back the database up, land **one more visit after
+the backup**, restore into a second instance, and compare. PGlite is Postgres 17,
+so the dump/restore is a real data directory moved into a real, separate cluster.
+
+This is a rehearsal, not the drill. It uses `dumpDataDir()` rather than
+`pg_dump`, invented learners rather than real ones, and uploads nothing anywhere.
+It cannot close PRO-16 and §6 stays empty because of it.
+
+What it does buy, which is not small: before it existed,
+`scripts/sql/backup-manifest.sql` had never been executed against anything, and
+nothing established that it could ever *fail*. The rehearsal now proves the
+manifest notices
+
+- a partition that came back detached from its parent (`rowcount` for
+  `events.behavior_event` falls to 0, the `partition` lines vanish),
+- a table that restored short,
+- an `ml` export view rebuilt without its consent join — `unconsented_leaks`
+  stops being 0.
+
+A fingerprint that cannot fail is worse than none: it turns "we have not checked"
+into "we checked and it was fine". Run this after any migration that adds a
+schema, a partition scheme, or an `ml` view, and keep the checks in the `.sql`
+file so both sides of the real comparison stay one file.
+
 ## 6. Drill log
+
+Only a restore of the **real** database gets a row here. A rehearsal (§5.4) does
+not, however green it is.
 
 | Date | Dump stamp | Recovered to (`watermark`) | Duration | Result | Notes |
 | --- | --- | --- | --- | --- | --- |
 | — | — | — | — | — | No drill has been run. No database exists yet (PRO-70). |
+
+### What is blocking which criterion
+
+Two independent blockers, and they are not interchangeable:
+
+| PRO-16 criterion | Blocked by | Why |
+| --- | --- | --- |
+| runbook in the repo | — | done |
+| manifest/comparison actually works | — | done, §5.4 |
+| **a real restore, recorded above** | [PRO-70](/PRO/issues/PRO-70) only | needs `DIRECT_URL`. Does **not** need the offsite bucket: the first drill can dump and restore without ever uploading anything |
+| backup in a second failure domain | [PRO-85](/PRO/issues/PRO-85) (`backlog`, founder's call) | needs an account nobody has opened |
+| `npm test` green | — | done |
+
+So PRO-70 alone unblocks the drill, and PRO-85 alone keeps the gate shut
+afterwards. A drill run without a bucket is still worth running the day the
+credential arrives — it is how we find out whether the restore works while it is
+still cheap to find out.
 
 Also record here, once, when the database first exists: server major version,
 pooler hostname, and where the age private key is escrowed.
