@@ -7,3 +7,10 @@ This version has breaking changes — APIs, conventions, and file structure may 
 This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
 
 <!-- END:nextjs-agent-rules -->
+
+# Diagrams are Mermaid
+
+Any diagram you produce — in `docs/`, an ADR, a runbook, a plan, a PR
+description, or a task comment — is a `mermaid` code block in Markdown. Not a
+screenshot, not ASCII art, not an exported image. Read `docs/diagrams.md` for
+the diagram-type table and house rules before drawing one.

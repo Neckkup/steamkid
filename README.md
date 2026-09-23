@@ -123,7 +123,12 @@ src/lib/privacy/redact.ts   PII redaction — the choke point for external servi
 src/lib/observability/      Langfuse wrapper + Sentry scrubbing
 prisma/schema.prisma        data model (domain tables land in PRO-3 / PRO-7)
 docs/adr/                   architecture decisions and what we rejected
+docs/diagrams.md            diagram conventions — every diagram is Mermaid
 ```
+
+## Conventions
+
+- [Diagrams — Mermaid in Markdown](docs/diagrams.md)
 
 ## Decisions
 
