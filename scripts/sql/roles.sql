@@ -107,9 +107,18 @@ ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_migrate IN SCHEMA ml
 -- glance — the configuration looked intact while the runtime role could not
 -- read a single row.
 --
--- These grants are idempotent and additive. Run them as the owner of the
--- objects (`steamkid_app` today, `steamkid_migrate` after the cutover) or as
--- `postgres`.
+-- These grants are idempotent and additive. Run them **as the owner of the
+-- objects** — `steamkid_app` today, `steamkid_migrate` after the cutover.
+--
+-- Not as `postgres`, and this is a trap worth knowing: `GRANT`/`REVOKE` only
+-- affect privileges the *issuing role* itself granted. `steamkid_app` is the
+-- grantor of record for everything below, so the same statements run as
+-- `postgres` match nothing, change nothing, and raise only a warning rather
+-- than an error. Measured 2026-09-23: `REVOKE DELETE ON app.ai_verdict FROM
+-- steamkid_runtime` as `postgres` returned cleanly and the privilege was still
+-- there afterwards. A privilege script that appears to succeed while doing
+-- nothing is the worst possible failure mode for this file — always re-read the
+-- catalog, or run `npm run verify:grants`, rather than trusting the exit code.
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA identity, app, events
   TO steamkid_runtime;
 GRANT SELECT ON ALL TABLES IN SCHEMA ml TO steamkid_runtime;
@@ -167,7 +176,8 @@ ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_app IN SCHEMA identity, app, events, 
 -- Granting it explicitly closes the window and is correct in both directions:
 -- before the cutover it is the only thing giving the migrator DDL, and after
 -- `REASSIGN OWNED` it is redundant with ownership but harmless. Issue this as
--- the schema owner (`steamkid_app` today) or as `postgres`.
+-- the schema owner (`steamkid_app` today), for the grantor reason in 4b above —
+-- as `postgres` these are silent no-ops, not errors.
 GRANT USAGE, CREATE ON SCHEMA identity, app, events, ml TO steamkid_migrate;
 
 -- Prisma's ledger, and the same trap one layer down. `public._prisma_migrations`
@@ -222,6 +232,13 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public._prisma_migrations TO steamkid_mi
 --   --        where nspname in ('identity','app','events','ml');
 --   -- 3. Only now take DDL away, and only after Backend has switched to the
 --   --    migrate credential. Before this line, steamkid_app still works.
+--   --    These two are REVOKEs, so the grantor rule in 4b applies: they only
+--   --    remove what the issuing role granted, and they warn rather than error
+--   --    when they match nothing. Confirm afterwards instead of assuming:
+--   --      select has_database_privilege('steamkid_app', current_database(), 'CREATE'),
+--   --             has_schema_privilege('steamkid_app', 'public', 'CREATE');
+--   --    Both must read false. If either is still true, re-issue the REVOKE as
+--   --    whichever role granted it (see the `/grantor` suffix in the ACL).
 --   REVOKE CREATE ON DATABASE postgres FROM steamkid_app;
 --   REVOKE CREATE ON SCHEMA public FROM steamkid_app;
 --   -- 4. Drops the section 4b bridge defaults along with anything else left.

@@ -257,6 +257,29 @@ internet with no authentication step in front of them.
 privilege on the four schemas, and if any table other than `_prisma_migrations`
 appears in `public`.
 
+### `GRANT` as the wrong role is a silent no-op, not an error
+
+Applying §4b/§4c as `postgres` does nothing at all, and says so only in a
+warning. `GRANT` and `REVOKE` affect solely the privileges the **issuing role
+itself granted**; `steamkid_app` is the grantor of record for every privilege in
+those sections, so a matching statement from `postgres` matches no ACL entry and
+changes nothing. Measured 2026-09-23, both as `postgres`:
+
+| Statement | Reported | Actual effect |
+| --- | --- | --- |
+| `GRANT CREATE ON SCHEMA app TO steamkid_migrate` | success | none — `nspacl` unchanged |
+| `REVOKE DELETE ON app.ai_verdict FROM steamkid_runtime` | success | none — privilege still held |
+
+Re-issued as `steamkid_app`, the owner, both took effect immediately.
+
+This is worth writing down because it is the failure mode this ADR can least
+afford: a privilege script that exits 0 while leaving the database untouched.
+`postgres` holds `ADMIN` on both roles, so the fix when it is needed is `SET
+ROLE` first — but the durable answer is that §4b and §4c run as the object
+owner, and that the catalog, not the exit code, is what says whether they
+worked. It is also the second time today that this database has reported success
+for something that did not happen; both times `verify:grants` is what caught it.
+
 ### `citext` lives in `public`, on purpose
 
 Migration 1 declares `email citext` unqualified. `citext` was absent from the fresh
