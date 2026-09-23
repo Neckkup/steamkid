@@ -30,6 +30,7 @@ import { SkillOverride } from "@/components/teacher/skill-override";
 import { Card, PageHeading, PageShell, StatusPill } from "@/components/ui";
 import { getItemById } from "@/content";
 import { isDemoDatabase } from "@/lib/growth/runtime";
+import { isUuidV7 } from "@/lib/ids";
 import { traceUrl } from "@/lib/observability/langfuse";
 import {
   REASON_CODES,
@@ -163,6 +164,14 @@ export default async function TeacherVerdictReviewPage({
   assertTeacherSurfaceAllowed();
 
   const { verdictId } = await params;
+  // A mistyped id must never reach Postgres. `app.ai_verdict.id` is `uuid` with
+  // an `is_uuidv7` CHECK, so a value of any other shape is not a row that can
+  // exist — but `WHERE v.id = $1::uuid` *throws* on it instead of returning no
+  // rows, and that throw landed in the error boundary. A teacher then read
+  // "ตอนนี้อ่านข้อมูลการเติบโตไม่ได้", the same screen a real database outage
+  // shows, and had no way to tell a typo from a broken system (PRO-98 D2).
+  if (!isUuidV7(verdictId)) notFound();
+
   const queue = await resolveReviewQueue();
   const demo = isDemoDatabase();
 

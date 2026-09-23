@@ -21,6 +21,7 @@ import { Card, EmptyState, PageHeading, PageShell, StatusPill } from "@/componen
 import { percent, presentForTeacher, type TeacherSkillRow } from "@/lib/growth/present";
 import { isDemoDatabase, resolveGrowthSource } from "@/lib/growth/runtime";
 import { CONFIDENCE_DISPLAY_FLOOR, type GrowthLabel } from "@/lib/growth/types";
+import { isUuidV7 } from "@/lib/ids";
 
 import { assertTeacherSurfaceAllowed } from "../guard";
 
@@ -131,6 +132,13 @@ export default async function TeacherLearnerPage({
   assertTeacherSurfaceAllowed();
 
   const { learnerRef } = await params;
+  // Same reason as the review screen (PRO-98 D2): `app.learner.public_ref` is
+  // `uuid` with an `is_uuidv7` CHECK, so a ref of any other shape cannot name a
+  // learner — but the query would cast it and Postgres would raise "invalid
+  // input syntax for type uuid" all the way to the error boundary, which tells
+  // a teacher the system is down when they only mistyped a link.
+  if (!isUuidV7(learnerRef)) notFound();
+
   const source = await resolveGrowthSource();
   const demo = isDemoDatabase();
 
