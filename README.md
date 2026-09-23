@@ -122,9 +122,19 @@ src/lib/db.ts               Prisma client
 src/lib/privacy/redact.ts   PII redaction — the choke point for external services
 src/lib/observability/      Langfuse wrapper + Sentry scrubbing
 prisma/schema.prisma        data model (domain tables land in PRO-3 / PRO-7)
+docs/architecture.md        how the pieces fit, in diagrams — start here
+docs/data-model.md          the Postgres schemas, as ER diagrams
 docs/adr/                   architecture decisions and what we rejected
 docs/diagrams.md            diagram conventions — every diagram is Mermaid
 ```
+
+## How it fits together
+
+[**docs/architecture.md**](docs/architecture.md) is the map: system context, the
+learner request path, the AI grading path, the route map, and the privacy
+boundary — drawn from the code rather than from intent, with a closing section
+listing where the repository is behind its own decision documents.
+[docs/data-model.md](docs/data-model.md) has the schema.
 
 ## Conventions
 

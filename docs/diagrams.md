@@ -89,6 +89,15 @@ flowchart TD
   pub -.rejected.-> pro
 ```
 
+## Worked examples in this repo
+
+[**docs/architecture.md**](architecture.md) and
+[docs/data-model.md](data-model.md) apply every rule above to the real codebase
+— eleven diagrams covering system context, the learner request path, the AI
+grading path, the route map, the privacy boundary and the schema. Read one of
+those before writing a new diagram; copying a diagram that already matches the
+code is faster than inventing node names nobody else uses.
+
 ## Review checklist
 
 A doc PR with a diagram is not done until:
