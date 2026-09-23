@@ -365,7 +365,7 @@ COMMENT ON VIEW ml.v_grading_examples IS
   'Graded verdicts only. The per-skill AI level and the level that survived teacher review are both in `effective_scores`; ml.v_teacher_corrections is the flat form.';
 
 -- The pair a model can actually learn from: what the AI said, what a human
--- said instead, for one skill. `note` is left out on purpose — it is free text
+-- said instead, for one skill. `note` is left out on purpose - it is free text
 -- an adult typed about a child and can carry a name; `reason_code` carries the
 -- reusable part.
 CREATE VIEW ml.v_teacher_corrections AS
