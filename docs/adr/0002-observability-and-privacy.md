@@ -1,7 +1,8 @@
 # ADR 0002 — Observability and children's privacy
 
 - **Status:** accepted (self-host target), interim posture active until the host exists
-- **Date:** 2026-09-18
+- **Date:** 2026-09-18 (amended 2026-09-23: leaked credentials recorded as an
+  accepted risk, gated on the pilot)
 - **Decided by:** CTO
 - **Issue:** PRO-4
 
@@ -129,6 +130,68 @@ A rule that lives only in a document gets broken by the third contributor.
 | Self-hosting Langfuse | Low-to-medium. Switching to Cloud is an env-var change (`LANGFUSE_BASEURL` + keys) plus turning on `referenceOnly()` for free text. Historical traces would either be migrated or left behind on the old instance. |
 | Sentry Cloud | Low. DSN swap; no product code depends on the vendor. |
 | Redaction being a choke point | This is the cheap insurance. If it turns out to be unnecessary we have lost a little trace fidelity; if it is missing when we need it, the loss is permanent. |
+
+## Accepted risk: the leaked credentials are still live, on purpose
+
+**This section exists so that a reader in three months does not conclude we
+never noticed.** We noticed, we costed the fix at two minutes, and the account
+owner decided to carry the risk instead.
+
+| | |
+| --- | --- |
+| **Risk** | Three credentials pasted in plaintext on a board comment remain valid: the Langfuse key pair (`pk-lf-…` / `sk-lf-…`) and the Gemini API key. |
+| **Decided by** | The founder — the owner of both accounts. |
+| **Date** | 23 September 2026 (answered on [PRO-74](/PRO/issues/PRO-74)). |
+| **Rejected alternative** | Rotate now: new key pair in Langfuse, new key in Google AI Studio, revoke both old ones, update `steamkid/langfuse/public-key`, `steamkid/langfuse/secret-key`, `steamkid/gemini/api-key`. Recommended by the CEO and the CTO, declined by the founder. |
+| **Status** | Live, with a hard expiry — see the gate below. |
+
+### What happened
+
+On 19 September 2026 the founder handed the team its credentials by pasting
+them into a comment on [PRO-30](/PRO/issues/PRO-30). Board comments are readable
+through the board's API, so all three values are leaked by definition: we cannot
+prove nobody read them, and a key that was ever in plaintext is not recoverable
+by deleting the message. The comment stays — the founder chose to keep it, and
+removing it would not make the keys any safer.
+
+Both key sets were confirmed still valid on 23 September 2026: the CTO ran the
+[PRO-73](/PRO/issues/PRO-73) gate with the Langfuse pair (ingestion `207`, trace
+read-back `200`), so the pair carries full project rights, not leftovers.
+
+### What the risk is, today and after the pilot opens
+
+Today the exposure is **budget and noise**. Whoever holds the Gemini key can
+bill model calls to our project. Whoever holds `sk-lf-…` can write junk traces.
+Langfuse currently holds nothing but our own test traffic, so the worst case is
+an invoice and a cleanup.
+
+The day a real student's work reaches Langfuse the same `sk-lf-…` becomes a
+**read** credential over children's free-text answers, through `/api/public/*`,
+project-wide. Redaction does not help here: it strips identifiers from a trace,
+it does not stop an authenticated holder of the project key from reading what
+remains. Open signup on the instance ([PRO-34](/PRO/issues/PRO-34)) compounds it.
+
+That is the line this accepted risk stops at.
+
+### The gate
+
+**No real student trace reaches Langfuse until all three keys are rotated.**
+This is a pilot-launch gate, not a reminder: it is held open as
+[PRO-101](/PRO/issues/PRO-101) and noted on the other pre-pilot gate,
+[PRO-34](/PRO/issues/PRO-34), alongside closing open signup. If it is ever worth
+enforcing in code, it belongs next to the rest of the hardening gate
+(`src/lib/observability/langfuse-hardening.ts`, [PRO-84](/PRO/issues/PRO-84)).
+
+Clearing it is two minutes of the founder's time and needs nobody else:
+
+1. Langfuse → Project Settings → API Keys → create a new pair, delete the old one.
+2. Google AI Studio → API keys → create a new key, delete the old one.
+3. Paperclip → Secrets → update `steamkid/langfuse/public-key`,
+   `steamkid/langfuse/secret-key`, `steamkid/gemini/api-key`. The existing
+   bindings for the CTO and the AIEngineer keep working; nothing is re-created.
+
+New values go in the Secrets page only. Never in a comment, a commit, or a
+document — including this one.
 
 ## Open items owned elsewhere
 
