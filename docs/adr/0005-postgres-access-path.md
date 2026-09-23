@@ -124,8 +124,33 @@ The combined DDL+DML role this ADR first shipped. It has been stripped of `CREAT
 on both the database and `public`, so it can no longer run a migration, but it is
 **not yet dropped** — keeping it until the two new bindings are live means the
 switch stays reversible. The drop is three statements at the bottom of
-`scripts/sql/roles.sql`. Nothing ever held its credential: every binding proposal
-for it was auto-rejected, which is the same fault that blocked PRO-68.
+`scripts/sql/roles.sql`.
+
+**Its credential is live and currently bound to two agents — it did not stay
+unheld.** Only the first binding batch (09:01, PRO-70) was auto-rejected on
+`http_409`. A second batch was raised at 09:08 against the approved `secretId` and
+the founder approved all four, so `steamkid/postgres/database-url` and
+`steamkid/postgres/direct-url` — both carrying `steamkid_app` — are injected today
+as `env.DATABASE_URL` / `env.DIRECT_URL` into **Backend** and **CTO**.
+
+Retiring the role therefore broke two live bindings rather than none. Measured
+2026-09-23 by resolving both bound secrets and connecting through the pooler:
+
+| Bound secret | Port | Result as `steamkid_app` |
+| --- | --- | --- |
+| `env.DIRECT_URL` | 5432 | `CREATE TABLE public.…` → `42501 permission denied for schema public` |
+| `env.DATABASE_URL` | 6543 | `CREATE TABLE public.…` → `42501 permission denied for schema public` |
+| both | — | `SELECT` still succeeds; the role can connect and read, nothing more |
+
+`public` is where `prisma migrate deploy` creates `_prisma_migrations`, so the
+failure lands on its **first** statement — before any schema in this ADR is
+touched. Any agent still holding these two variables gets a connection that opens
+and then refuses all DDL, which reads like a broken migration rather than a
+revoked grant.
+
+Sequencing consequence: the two new bindings must be approved **and** the two
+`steamkid_app` bindings revoked. Dropping the role while those bindings resolve
+would turn a clear `42501` into an authentication failure against a vanished role.
 
 ### `citext` lives in `public`, on purpose
 
