@@ -92,19 +92,94 @@ ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_migrate IN SCHEMA ml
   REVOKE INSERT, UPDATE, DELETE ON TABLES FROM steamkid_runtime;
 
 -- ---------------------------------------------------------------------------
+-- 4b. Objects that already exist — the clause this file originally lacked
+-- ---------------------------------------------------------------------------
+-- Section 4 was written against an empty database, so default privileges were
+-- the whole story. That assumption expired at 09:17 on 2026-09-23, when the
+-- PRO-68 migrations were applied as `steamkid_app` after a schema reset that
+-- also took back ownership of `identity`/`app`/`events`/`ml`.
+--
+-- Default privileges only ever apply to objects created *afterwards*, and only
+-- by the role named in `FOR ROLE`. So every table that now exists was invisible
+-- to them: 31 tables owned by `steamkid_app`, on which `steamkid_runtime` held
+-- no privilege of any kind. The roles still existed and `pg_default_acl` still
+-- read correctly, which is exactly why this was worth a check rather than a
+-- glance — the configuration looked intact while the runtime role could not
+-- read a single row.
+--
+-- These grants are idempotent and additive. Run them as the owner of the
+-- objects (`steamkid_app` today, `steamkid_migrate` after the cutover) or as
+-- `postgres`.
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA identity, app, events
+  TO steamkid_runtime;
+GRANT SELECT ON ALL TABLES IN SCHEMA ml TO steamkid_runtime;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA identity, app, events, ml
+  TO steamkid_runtime;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA identity, app, events, ml
+  TO steamkid_runtime;
+
+-- Bridge, and temporary on purpose. While Backend is still applying migrations
+-- as `steamkid_app`, every new migration would otherwise create another table
+-- the runtime role cannot touch, and the grants above would need rerunning by
+-- hand after each one. Mirroring the section 4 defaults onto `steamkid_app`
+-- keeps that from decaying between now and the cutover.
+--
+-- DELETE THIS BLOCK when `steamkid_app` is dropped; `DROP OWNED BY` removes the
+-- entries anyway, and leaving the text here would imply the bridge is permanent.
+ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_app IN SCHEMA identity, app, events
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO steamkid_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_app IN SCHEMA ml
+  GRANT SELECT ON TABLES TO steamkid_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_app IN SCHEMA identity, app, events, ml
+  GRANT USAGE, SELECT ON SEQUENCES TO steamkid_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_app IN SCHEMA identity, app, events, ml
+  GRANT EXECUTE ON FUNCTIONS TO steamkid_runtime;
+
+-- Note what these grants deliberately do *not* do: they never make
+-- `steamkid_runtime` an owner. `DROP TABLE`, `ALTER TABLE` and `DROP TRIGGER`
+-- all require ownership, so the append-only history is still protected while
+-- `steamkid_app` holds it. The security invariant survived the reset; only the
+-- runtime role's ability to do its job did not.
+
+-- ---------------------------------------------------------------------------
 -- 5. Retiring steamkid_app
 -- ---------------------------------------------------------------------------
--- The combined DDL+DML role from PRO-70. It is stripped of DDL here rather than
--- dropped, so that the switch to the new credentials stays reversible while the
--- new secret bindings are still being approved. Drop it once both new bindings
--- are live and `npm run verify:roles` passes from a binding-injected
--- environment:
+-- The combined DDL+DML role from PRO-70.
 --
---   REASSIGN OWNED BY steamkid_app TO steamkid_migrate;  -- expected: owns nothing
+-- The two REVOKEs below are commented out, and that is a correction rather than
+-- an oversight. They were live in the first version of this file, and stripping
+-- DDL from a role Backend was actively migrating with turned a permissions
+-- decision into what looked like a broken migration. The revoke belongs in the
+-- cutover, as one step of an ordered sequence, not standing in a file anyone
+-- might re-run while PRO-68 is still in flight.
+--
+--   REVOKE CREATE ON DATABASE postgres FROM steamkid_app;
+--   REVOKE CREATE ON SCHEMA public FROM steamkid_app;
+--
+-- Cutover, in this order, once both new bindings are live. Run as `postgres`:
+-- REASSIGN needs membership in both the source and target roles, which neither
+-- steamkid_app nor steamkid_migrate has over the other.
+--
+--   -- 1. Move the 31 existing objects to the migrator. ACLs travel with the
+--   --    object, so section 4b's grants survive this and do not need rerunning.
+--   REASSIGN OWNED BY steamkid_app TO steamkid_migrate;
+--   -- 2. The four schemas come back under migrator ownership with them, which
+--   --    is what restores `steamkid_migrate`'s ability to run migration N+1.
+--   --    Verify before continuing:
+--   --      select nspname, pg_get_userbyid(nspowner) from pg_namespace
+--   --        where nspname in ('identity','app','events','ml');
+--   -- 3. Only now take DDL away, and only after Backend has switched to the
+--   --    migrate credential. Before this line, steamkid_app still works.
+--   REVOKE CREATE ON DATABASE postgres FROM steamkid_app;
+--   REVOKE CREATE ON SCHEMA public FROM steamkid_app;
+--   -- 4. Drops the section 4b bridge defaults along with anything else left.
 --   DROP OWNED BY steamkid_app;
 --   DROP ROLE steamkid_app;
-REVOKE CREATE ON DATABASE postgres FROM steamkid_app;
-REVOKE CREATE ON SCHEMA public FROM steamkid_app;
+--
+-- `npm run verify:grants` after step 2 and `npm run verify:roles` after step 4.
+-- Do not drop the role before the bindings are gone: a dropped role turns a
+-- readable `42501` into an authentication failure against a name that no longer
+-- exists, which is far harder to diagnose.
 
 -- ---------------------------------------------------------------------------
 -- What this should look like afterwards

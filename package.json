@@ -23,6 +23,7 @@
     "db:setup": "npm run db:migrate && npm run db:seed:registry",
     "verify:pipeline": "tsx scripts/verify-behaviour-pipeline.ts",
     "verify:roles": "tsx --env-file-if-exists=.env.local scripts/verify-db-roles.ts",
+    "verify:grants": "tsx --env-file-if-exists=.env.local scripts/verify-db-grants.ts",
     "drill:rehearse": "tsx scripts/restore-drill.ts",
     "browser:setup": "bash scripts/setup-browser.sh",
     "browser:check": "bash scripts/setup-browser.sh --check",

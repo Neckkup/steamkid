@@ -118,13 +118,52 @@ privileges could go in ahead of the first table rather than being retrofitted ar
 it. The sequencing was reversed on that basis. *Irreversible-first: the cost of this
 change was lowest on the day the database was empty, and only ever rises.*
 
+**That window closed the same hour, and the retrofit arrived anyway.** Between
+09:15 and 09:27 on 2026-09-23 the PRO-68 migrations were applied — as
+`steamkid_app`, after a schema reset that dropped the four schemas and recreated
+them under `steamkid_app` ownership. Measured from the catalog afterwards:
+
+| | Designed | Found at 09:30 |
+| --- | --- | --- |
+| Owner of `identity`/`app`/`events`/`ml` | `steamkid_migrate` | `steamkid_app` |
+| Owner of the 31 tables | `steamkid_migrate` | `steamkid_app` |
+| `steamkid_runtime` privileges on those tables | full DML | **none, on any of them** |
+| `steamkid_migrate` `CREATE` on the four schemas | yes | **no** |
+| `pg_default_acl` entries from §4 of `roles.sql` | present | present, and inert |
+
+The last two rows are the whole lesson. `ALTER DEFAULT PRIVILEGES` applies only to
+objects created afterwards **by the role named in `FOR ROLE`**, so a migration run
+by any other role lands entirely outside it. Nothing about the configuration looked
+wrong — both roles existed, and `pg_default_acl` still read exactly as designed —
+while the runtime role could not read a single row and the migrator could not
+create a single table.
+
+The security invariant survived: `steamkid_runtime` still owned nothing, so
+`DROP TABLE`, `ALTER TABLE` and `DROP TRIGGER` stayed out of reach regardless of who
+owned the tables. What did not survive was the runtime role's ability to do its job,
+and the migrator's ability to run migration N+1.
+
+Repaired additively in `roles.sql` §4b — explicit grants on the 31 objects that
+already exist, plus the §4 defaults mirrored onto `steamkid_app` so that migrations
+Backend runs *before* the cutover do not re-open the same hole one table at a time.
+The ownership transfer is deliberately **not** in that repair: `REASSIGN OWNED`
+would take DDL away from the role Backend is migrating with right now, which is the
+same mistake as revoking `CREATE` mid-flight, made twice. It is step 1 of the
+cutover sequence at the bottom of `roles.sql` instead.
+
 ### `steamkid_app` is retired
 
-The combined DDL+DML role this ADR first shipped. It has been stripped of `CREATE`
-on both the database and `public`, so it can no longer run a migration, but it is
-**not yet dropped** — keeping it until the two new bindings are live means the
-switch stays reversible. The drop is three statements at the bottom of
-`scripts/sql/roles.sql`.
+The combined DDL+DML role this ADR first shipped. It is **still fully live**: it
+holds `CREATE` on the database and on `public`, owns the four schemas and all 31
+tables, and is the role Backend is running migrations with today.
+
+An earlier revision of this section said it had been stripped of `CREATE` and could
+no longer run a migration. That was true for roughly ten minutes and it was the
+wrong call: taking DDL from a role a teammate is actively migrating with turns a
+permissions decision into what reads as a broken migration. The two `REVOKE`s have
+been commented out of `scripts/sql/roles.sql` and moved into the ordered cutover
+sequence at the bottom of that file, where they run *after* Backend has switched to
+the migrate credential. Until then `steamkid_app` keeps working, on purpose.
 
 **Its credential is live and currently bound to two agents — it did not stay
 unheld.** Only the first binding batch (09:01, PRO-70) was auto-rejected on
@@ -339,7 +378,33 @@ The check that proves this ADR, in order:
    append-only guarantee went untested. And the fixture lives in `events` rather
    than a scratch schema, so it exercises the real `ALTER DEFAULT PRIVILEGES` path
    — a probe schema would pass while the actual grants were broken.
-5. `prisma migrate deploy` applies all four migrations unedited as
+5. The grants hold for every object that exists, not a sample — **done
+   2026-09-23**. `npm run verify:grants` (`scripts/verify-db-grants.ts`) reads the
+   catalog rather than probing behaviour, which buys three things `verify:roles`
+   cannot give. It runs on **one** credential with no special rights, so the split
+   stays checkable during the window where the two new secrets are still awaiting
+   approval and nobody holds both. It covers **all 31 tables** instead of one
+   fixture. And it asserts the `ml` projection is read-only — the control that
+   stops application code writing to consent-filtered training data, which
+   `verify:roles` never touched.
+
+   It is written to fail, and was made to. Against the live database, revoking
+   `INSERT` on one table in `app` and granting `INSERT` on one table in `ml`:
+
+   ```
+   FAIL  steamkid_runtime has full DML on all 18 table(s) in app — 1 without it: ai_verdict
+   FAIL  steamkid_runtime cannot write to ml — WRITABLE: training_export_run
+   26/28 checks passed          (exit 1)
+   ```
+
+   Both grants were restored and the run returned to 28/28, exit 0. The two checks
+   worth naming: `steamkid_runtime owns nothing`, which is the append-only
+   guarantee in one query since `DROP`/`ALTER`/`DROP TRIGGER` require ownership and
+   ownership cannot be granted; and *"a new table created by X in Y reaches
+   `steamkid_runtime`"*, evaluated per role that currently owns objects — the check
+   that catches a migration applied by a role the default privileges were not
+   written for, which is exactly how the 09:17 regression above went unnoticed.
+6. `prisma migrate deploy` applies all four migrations unedited as
    `steamkid_migrate`, and `/api/health` reports `database: true` —
    [PRO-68](/PRO/issues/PRO-68), Backend, once the new bindings are live. The
    statements that migration 1 opens with were dry-run as the migrator on
