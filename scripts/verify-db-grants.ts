@@ -195,6 +195,53 @@ async function main(): Promise<void> {
     );
 
     // ---------------------------------------------------------------------
+    // 4b. The other half of ownership: everything belongs to the migrator.
+    //
+    //    Section 4 asks whether the runtime role owns anything, which is the
+    //    security question. This asks whether anybody *else* does, which is
+    //    the operational one, and on 2026-09-23 it was the expensive one: the
+    //    09:17 reset left all 31 tables and all four schemas owned by
+    //    `steamkid_app`, so `ALTER DEFAULT PRIVILEGES FOR ROLE
+    //    steamkid_migrate` covered nothing that existed and nothing that was
+    //    about to be created. Section 6 notices the consequence per schema;
+    //    this names the cause directly, and keeps naming it after
+    //    `steamkid_app` is dropped and the story is no longer fresh.
+    //
+    //    Prisma's ledger is in here because `prisma migrate` alters it during
+    //    some upgrades, and ALTER needs ownership rather than the DML grant
+    //    section 4c hands out.
+    // ---------------------------------------------------------------------
+    const foreignOwned = await client.query<{ kind: string; name: string; owner: string }>(
+      `SELECT CASE c.relkind WHEN 'v' THEN 'view' WHEN 'S' THEN 'sequence' ELSE 'table' END AS kind,
+              format('%I.%I', n.nspname, c.relname) AS name,
+              pg_get_userbyid(c.relowner) AS owner
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = ANY($2) AND c.relkind IN ('r', 'p', 'v', 'S')
+          AND c.relowner <> $1::regrole
+        UNION ALL
+       SELECT 'schema', nspname, pg_get_userbyid(nspowner) FROM pg_namespace
+        WHERE nspname = ANY($2) AND nspowner <> $1::regrole
+        UNION ALL
+       SELECT 'ledger', 'public._prisma_migrations', pg_get_userbyid(relowner)
+         FROM pg_class WHERE oid = 'public._prisma_migrations'::regclass
+          AND relowner <> $1::regrole`,
+      [MIGRATE, ALL_SCHEMAS],
+    );
+    const strayOwners = [...new Set(foreignOwned.rows.map((r) => r.owner))];
+    check(
+      `${MIGRATE} owns every object in the application schemas`,
+      foreignOwned.rows.length === 0,
+      foreignOwned.rows.length === 0
+        ? "schemas, tables, views, sequences and Prisma's ledger"
+        : `${foreignOwned.rows.length} owned by ${strayOwners.join(", ")}: ` +
+          `${foreignOwned.rows
+            .slice(0, 5)
+            .map((r) => `${r.kind} ${r.name}`)
+            .join(", ")}${foreignOwned.rows.length > 5 ? ", …" : ""}` +
+          ` — ALTER DEFAULT PRIVILEGES FOR ROLE ${MIGRATE} does not reach what they create`,
+    );
+
+    // ---------------------------------------------------------------------
     // 5. Every table that exists, not a sample. This is the check that catches
     //    a migration applied by an unexpected role: default privileges stay
     //    perfectly intact while the tables they were meant to cover do not

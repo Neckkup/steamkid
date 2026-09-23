@@ -30,10 +30,15 @@
 --   CREATE ROLE steamkid_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
 --     PASSWORD 'SCRAM-SHA-256$4096:<salt>$<StoredKey>:<ServerKey>';
 
--- Supabase grants role membership with SET FALSE. `postgres` already holds
--- ADMIN on both roles, so this adds no authority it did not have — it only
--- makes SET ROLE usable, which `AUTHORIZATION` and `ALTER DEFAULT PRIVILEGES
--- FOR ROLE` both require.
+-- Supabase grants `postgres` membership in both roles with ADMIN TRUE but
+-- INHERIT FALSE, SET FALSE, and since PostgreSQL 16 those are three separate
+-- things. ADMIN lets `postgres` grant the role away; it does *not* give it the
+-- privileges of the role, which is what `SET ROLE`, `AUTHORIZATION` and `ALTER
+-- DEFAULT PRIVILEGES FOR ROLE` all need. So this does add authority, and saying
+-- otherwise cost us a cutover attempt: `REASSIGN OWNED BY steamkid_app` failed
+-- with "Only roles with privileges of role steamkid_app may reassign objects
+-- owned by it" even though `postgres` held ADMIN on it (measured 2026-09-23).
+-- The membership a REASSIGN needs is the one below, not the one Supabase ships.
 GRANT steamkid_migrate TO postgres WITH SET TRUE;
 GRANT steamkid_runtime TO postgres WITH SET TRUE;
 
@@ -108,7 +113,8 @@ ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_migrate IN SCHEMA ml
 -- read a single row.
 --
 -- These grants are idempotent and additive. Run them **as the owner of the
--- objects** — `steamkid_app` today, `steamkid_migrate` after the cutover.
+-- objects** — `steamkid_migrate`, which has owned all of them since the
+-- cutover on 2026-09-23. (It was `steamkid_app` while this was written.)
 --
 -- Not as `postgres`, and this is a trap worth knowing: `GRANT`/`REVOKE` only
 -- affect privileges the *issuing role* itself granted. `steamkid_app` is the
@@ -176,8 +182,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_app IN SCHEMA identity, app, events, 
 -- Granting it explicitly closes the window and is correct in both directions:
 -- before the cutover it is the only thing giving the migrator DDL, and after
 -- `REASSIGN OWNED` it is redundant with ownership but harmless. Issue this as
--- the schema owner (`steamkid_app` today), for the grantor reason in 4b above —
--- as `postgres` these are silent no-ops, not errors.
+-- the schema owner (`steamkid_migrate` since the cutover; `steamkid_app` before
+-- it), for the grantor reason in 4b above — as `postgres` these are silent
+-- no-ops, not errors.
 GRANT USAGE, CREATE ON SCHEMA identity, app, events, ml TO steamkid_migrate;
 
 -- Prisma's ledger, and the same trap one layer down. `public._prisma_migrations`
@@ -212,17 +219,37 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public._prisma_migrations TO steamkid_mi
 --
 -- Cutover, in this order, once both new bindings are live. Run as `postgres`:
 -- REASSIGN needs membership in both the source and target roles, which neither
--- steamkid_app nor steamkid_migrate has over the other. `postgres` does, and
--- that was checked rather than assumed — pg_auth_members, 2026-09-23, ADMIN on
--- steamkid_app, steamkid_migrate and steamkid_runtime. `postgres` is not a
--- superuser on Supabase (only supabase_admin is), so this membership is the
--- whole reason the sequence below is runnable at all:
+-- steamkid_app nor steamkid_migrate has over the other. `postgres` does — but
+-- not in the form the earlier version of this comment claimed. It said the
+-- ADMIN membership Supabase grants was "the whole reason the sequence below is
+-- runnable", and ADMIN is precisely the column that does not help:
 --
---   select r.rolname as member, g.rolname as granted, m.admin_option
---     from pg_auth_members m
---     join pg_roles r on r.oid = m.member
---     join pg_roles g on g.oid = m.roleid
---    where g.rolname like 'steamkid%';
+--   REASSIGN OWNED BY steamkid_app TO steamkid_migrate;
+--   ERROR: 42501 permission denied to reassign objects
+--   DETAIL: Only roles with privileges of role "steamkid_app" may reassign
+--           objects owned by it.
+--
+-- Check all three columns, not just admin_option — this is the query, and the
+-- row that matters is one with inherit_option or set_option true:
+--
+--   select r.rolname as granted, m.rolname as member,
+--          am.admin_option, am.inherit_option, am.set_option,
+--          g.rolname as grantor
+--     from pg_auth_members am
+--     join pg_roles r on r.oid = am.roleid
+--     join pg_roles m on m.oid = am.member
+--     join pg_roles g on g.oid = am.grantor
+--    where r.rolname like 'steamkid%';
+--
+-- Section 1 already grants that membership for the two new roles. The retiring
+-- role never got it, so the cutover has a step 0.5 that the plan did not:
+--
+--   GRANT steamkid_app TO postgres WITH INHERIT TRUE, SET TRUE;
+--
+-- ADMIN on steamkid_app is what makes that grant legal, and it disappears with
+-- the role at the end of the sequence. `postgres` is not a superuser on
+-- Supabase (only supabase_admin is), so without this line the sequence below is
+-- not runnable at all.
 --
 -- Section 4c changes what this sequence has to guarantee. The approved plan had
 -- Backend switch credentials (its step 2) before REASSIGN (its step 3), which
@@ -232,8 +259,17 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public._prisma_migrations TO steamkid_mi
 -- ownership — ALTER/DROP on the 31 existing tables, and retiring steamkid_app.
 -- The order is still the order; it is no longer load-bearing for Backend.
 --
---   -- 1. Move the 31 existing objects to the migrator. ACLs travel with the
---   --    object, so section 4b's grants survive this and do not need rerunning.
+-- Steps 1–3 ran on 2026-09-23 at 11:0x, after all four bindings executed.
+-- `verify:grants` read 43/43 immediately before and immediately after, which is
+-- the evidence that ACLs travel with the object: every grant section 4b made
+-- had `steamkid_app` as its grantor, and `ALTER ... OWNER` rewrote those
+-- entries to `steamkid_migrate` rather than dropping them. Step 4 is still
+-- outstanding and is gated on step 0 below.
+--
+--   -- 1. Move the 128 existing objects to the migrator (31 tables plus their
+--   --    indexes, 9 views, the four schemas, 10 functions, 80 types and
+--   --    Prisma's ledger). ACLs travel with the object, so section 4b's grants
+--   --    survive this and do not need rerunning.
 --   REASSIGN OWNED BY steamkid_app TO steamkid_migrate;
 --   -- 2. The four schemas come back under migrator ownership with them, which
 --   --    is what restores `steamkid_migrate`'s ability to run migration N+1.
@@ -251,11 +287,19 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public._prisma_migrations TO steamkid_mi
 --   --    whichever role granted it (see the `/grantor` suffix in the ACL).
 --   REVOKE CREATE ON DATABASE postgres FROM steamkid_app;
 --   REVOKE CREATE ON SCHEMA public FROM steamkid_app;
---   -- 4. Drops the section 4b bridge defaults along with anything else left.
+--   -- 4. Drops the section 4b bridge defaults (12 pg_default_acl entries that
+--   --    are already inert, since after step 3 steamkid_app cannot create
+--   --    anything for them to apply to) and revokes CONNECT along with them.
 --   DROP OWNED BY steamkid_app;
 --   DROP ROLE steamkid_app;
 --
 -- `npm run verify:grants` after step 2 and `npm run verify:roles` after step 4.
+--
+-- Between step 3 and step 4, `steamkid_app` is inert rather than gone: it can
+-- still authenticate, and holds CONNECT and nothing else — no privilege on any
+-- schema, table, view or sequence, measured. That is the intended resting place
+-- while the old bindings survive, because it is the state that produces the
+-- most readable error for anyone still reaching for `DATABASE_URL` by habit.
 --
 -- Step 0, and it is not SQL: the founder must delete the `env.DATABASE_URL` and
 -- `env.DIRECT_URL` bindings from **Backend** and **CTO** before step 4 runs.

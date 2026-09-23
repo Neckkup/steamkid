@@ -165,9 +165,16 @@ cutover sequence at the bottom of `roles.sql` instead.
 
 ### `steamkid_app` is retired
 
-The combined DDL+DML role this ADR first shipped. It is **still fully live**: it
-holds `CREATE` on the database and on `public`, owns the four schemas and all 31
-tables, and is the role Backend is running migrations with today.
+The combined DDL+DML role this ADR first shipped. **As of the cutover on
+2026-09-23 it is inert**: it owns nothing, holds no privilege on any schema,
+table, view or sequence, and retains only `CONNECT`. It still exists, and that is
+deliberate — see "The cutover ran" below for why the `DROP ROLE` waits.
+
+The rest of this section describes the state before that, and is kept because the
+sequencing argument in it is the reason the cutover was safe.
+
+It was **fully live**: it held `CREATE` on the database and on `public`, owned the
+four schemas and all 31 tables, and was the role Backend ran migrations with.
 
 An earlier revision of this section said it had been stripped of `CREATE` and could
 no longer run a migration. That was true for roughly ten minutes and it was the
@@ -299,6 +306,21 @@ holds membership in `steamkid_app`, `steamkid_migrate` and `steamkid_runtime`,
 with `ADMIN` on each. So the statement runs as `postgres`, and only as
 `postgres`.
 
+> **This pre-flight answer was wrong, and the cutover is where it showed.**
+> Since PostgreSQL 16 a membership carries three independent flags, and reading
+> `admin_option` alone is reading the wrong one. `ADMIN` confers the right to
+> grant the role onward; the *privileges* of the role come from `INHERIT` or
+> `SET`. Supabase's grants are `ADMIN TRUE, INHERIT FALSE, SET FALSE`, so
+> `REASSIGN OWNED BY steamkid_app` failed with `42501 permission denied to
+> reassign objects — Only roles with privileges of role "steamkid_app" may
+> reassign objects owned by it`, from the one role the pre-flight had just
+> certified could run it. Section 1 of `roles.sql` had already granted
+> `INHERIT`/`SET` for the two new roles, which is why nothing else had tripped on
+> this. The retiring role needed the same line — `GRANT steamkid_app TO postgres
+> WITH INHERIT TRUE, SET TRUE`, legal because `ADMIN` does confer that — after
+> which the reassignment ran. A pre-flight that reads one column of three is a
+> pre-flight that can certify a statement nobody can execute.
+
 **What does it move?** Everything `steamkid_app` owns: the four schemas, 31
 tables (one of them partitioned) plus 9 views, 87 indexes, 10 functions, 41
 composite and enum types, and `public._prisma_migrations`. Ownership carries the
@@ -343,7 +365,7 @@ role would therefore write to `app.learner` with the owner's authority — throu
 the consent-filtered projection, past a read-only control that every other check
 in the file reported as intact.
 
-Both properties hold today (43/43) and both were made to fail against the live
+Both properties hold today (43/43 when written, 44/44 now) and both were made to fail against the live
 database first: granting `INSERT` on `ml.v_consented_learner` and creating one
 `SECURITY DEFINER` function produced
 
@@ -413,6 +435,74 @@ have made the cutover check useless:
 the runtime URL "is not a substitute", while the code read
 `process.env.DIRECT_URL ?? process.env.DATABASE_URL` and would have used it. It
 now resolves the migrator URL only and refuses to start without it.
+
+### The cutover ran, and what it left behind
+
+All four bindings executed at 10:54 on 2026-09-23 against the new variable names,
+so for the first time both split credentials existed on one machine and the
+sequence at the bottom of `roles.sql` became runnable. `verify:roles` — which
+needs both credentials and had therefore never once run since the split was
+built — passed **13/13** against the live database. Every `DROP TABLE`, `ALTER
+TABLE`, `DROP TRIGGER`, `ALTER ... DISABLE TRIGGER`, `CREATE TABLE`, `DROP
+SCHEMA`, `CREATE SCHEMA` and `TRUNCATE` attempted as `steamkid_runtime` returned
+`42501`, and the append-only triggers refused `UPDATE` and `DELETE` on a real
+committed row. That is the claim this whole ticket exists to make, measured
+rather than asserted.
+
+Then, as `postgres`, in this order:
+
+| Step | Statement | Result, read back from the catalog |
+| --- | --- | --- |
+| 0.5 | `GRANT steamkid_app TO postgres WITH INHERIT TRUE, SET TRUE` | the membership `REASSIGN` needs; see the correction above |
+| 1 | `REASSIGN OWNED BY steamkid_app TO steamkid_migrate` | 128 relations, 4 schemas, 10 functions, 80 types and `public._prisma_migrations` moved; `steamkid_app` left owning 0 |
+| 3 | `REVOKE CREATE ON DATABASE postgres` / `ON SCHEMA public FROM steamkid_app` | database ACL now reads `steamkid_app=c/postgres` — connect, nothing else |
+
+`verify:grants` read 43/43 immediately before step 1 and 43/43 immediately after,
+which is the evidence for the claim that ACLs travel with ownership: every grant
+section 4b of `roles.sql` made had `steamkid_app` as its grantor, and `ALTER ...
+OWNER` rewrote those entries to `steamkid_migrate` instead of dropping them. No
+`GRANT` was re-issued.
+
+`steamkid_runtime` owned nothing before the cutover and owns nothing after it.
+The append-only guarantee was never in the blast radius of any of this — what
+moved was the DDL side.
+
+**Steps 2 and 4 of the old sequence are gone or deferred.** Step 2 (Backend
+switches credentials, proven with `prisma migrate status`) stopped being a
+cutover step when §4c granted the migrator schema `CREATE` and ledger access
+directly: Backend's credential works the moment it is bound, whether or not
+ownership has moved. Step 4 (`DROP OWNED` + `DROP ROLE`) is deliberately not
+done, because the founder has not yet deleted the `env.DATABASE_URL` /
+`env.DIRECT_URL` bindings that still carry `steamkid_app`. Dropping the role
+under a live binding replaces a readable `permission denied` with an
+authentication failure against a role name that no longer appears anywhere.
+
+#### One more check, because this failure mode has now happened twice
+
+`verify:grants` gained a 44th assertion: **`steamkid_migrate` owns every object
+in the four schemas** — every table, view and sequence, the schemas themselves,
+and Prisma's ledger.
+
+Section 4 of that file already asserts that the *runtime* role owns nothing,
+which is the security question. This is the operational one, and it is the one
+that was expensive: the 09:17 reset left everything owned by `steamkid_app`,
+so `ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_migrate` covered nothing that
+existed and nothing about to be created, while `pg_default_acl` still read
+exactly as designed. The per-schema check in section 6 notices the consequence;
+this one names the cause, and will keep naming it after `steamkid_app` is gone
+and the story is no longer fresh.
+
+Fault-injected against the live database: a table created in `events` by
+`postgres`, then dropped.
+
+```
+FAIL  steamkid_migrate owns every object in the application schemas — 1 owned by postgres: table events.__probe_owner_pro103 — ALTER DEFAULT PRIVILEGES FOR ROLE steamkid_migrate does not reach what they create
+FAIL  steamkid_runtime has full DML on all 10 table(s) in events — 1 without it: __probe_owner_pro103
+FAIL  a new table created by postgres in events reaches steamkid_runtime — missing SELECT, INSERT, UPDATE, DELETE — the next migration by postgres lands unreachable
+42/45 checks passed
+```
+
+Back to **44/44** once the probe table was dropped, with `verify:roles` at 13/13.
 
 ### `citext` lives in `public`, on purpose
 
@@ -692,3 +782,21 @@ The check that proves this ADR, in order:
    as the migrator afterwards, every one of those `CREATE`s returned `42501`.
    A verification of a privilege is only true as of the moment it ran, which is
    the argument for `verify:grants` existing at all.
+9. The cutover itself — **steps 0.5, 1 and 3 done 2026-09-23 11:0x**, see "The
+   cutover ran" above. Both split credentials bound and injected; `verify:roles`
+   13/13 with the real credentials; ownership of all 128 objects, the four
+   schemas and Prisma's ledger moved to `steamkid_migrate`; `steamkid_app` left
+   holding `CONNECT` and nothing else. `verify:grants` **44/44**, with the new
+   ownership assertion fault-injected and restored.
+
+   The migrations PRO-68 already applied were applied as `steamkid_app`; they
+   are now owned by `steamkid_migrate`, so migration N+1 runs as the migrator
+   and lands inside the default privileges rather than outside them — which is
+   what step 8's expired dry-run was really about.
+
+   **Outstanding, and it is the founder's:** delete the `env.DATABASE_URL` and
+   `env.DIRECT_URL` bindings from Backend and CTO, after which `DROP OWNED BY
+   steamkid_app; DROP ROLE steamkid_app;` closes this. Nothing in the
+   application reads those two variables any more — `connection-env.ts` prefers
+   the new names — so the wait costs nothing but keeps the error message honest
+   for a human who types `psql $DATABASE_URL` out of habit.
