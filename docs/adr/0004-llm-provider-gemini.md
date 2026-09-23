@@ -1,7 +1,8 @@
 # ADR 0004 — LLM provider: the Gemini API, paid tier
 
-- **Status:** accepted
-- **Date:** 2026-09-19
+- **Status:** accepted — with a recorded accepted risk, see below
+- **Date:** 2026-09-19 (amended 2026-09-23: paid-tier gate closed, under-18
+  restriction recorded as an accepted risk)
 - **Decided by:** CTO, on the founder's explicit instruction (18 Sep 2026, 21:34)
 - **Issue:** [PRO-27](/PRO/issues/PRO-27) (implemented in [PRO-28](/PRO/issues/PRO-28))
 - **Supersedes:** the `AI provider | Anthropic (external API)` row in [ADR 0001](0001-stack.md)
@@ -83,6 +84,75 @@ The gate is therefore **the first real learner answer, not the first API call.**
 Synthetic-only traffic (`ai:smoke`, eval fixtures, seeded dev data) may run
 against an unconfirmed key; a child's free text may not.
 
+## Accepted risk: we are outside the provider's age restriction, on purpose
+
+**This section exists so that a reader in three months does not conclude we
+never knew.** We knew, we wrote it down, and the account owner decided to carry
+it.
+
+| | |
+| --- | --- |
+| **Risk** | Account and service-continuity risk (see below). Not a training-data risk. |
+| **Decided by** | The founder — the owner of the Google Cloud account and of the business. |
+| **Date** | 23 September 2026 (answered on [PRO-75](/PRO/issues/PRO-75), recorded in `founder-answers-gemini-gate`; written up here on [PRO-93](/PRO/issues/PRO-93)). |
+| **Rejected alternative** | Move to Vertex AI. Recommended by the CTO, declined by the founder. |
+| **Status** | Live. Reviewed against the contingency plan in [`docs/runbooks/vertex-ai-fallback.md`](../runbooks/vertex-ai-fallback.md). |
+
+### What the risk is
+
+The Gemini API Additional Terms say:
+
+> "You also will not use the Services as part of a website, application, or
+> other service (collectively, "API Clients") that is directed towards or is
+> likely to be accessed by individuals under the age of 18."
+
+steamkid is a STEAM learning product for children. We are squarely inside that
+sentence, and the terms make no exception for the paid tier — this restriction
+is orthogonal to billing.
+
+**What the risk is not.** It is *not* that a child's answer becomes training
+data. Paid tier closed that: Google does not use paid-tier prompts or responses
+to improve its products, the founder confirmed billing is active on 23 Sep 2026,
+and that is the harm this ADR was originally written to prevent.
+
+**What the risk is.** Google may suspend or terminate access to the API at any
+time on a suspected violation. If that happens:
+
+- Grading stops **product-wide and without notice.** `callModel()` is the only
+  path to a model; there is no second provider by design (and
+  `vendor-boundary.test.ts` enforces that).
+- **No amount of better engineering prevents it.** This is a contract term, not
+  a defect. Retries, redaction, rate limiting, and a nicer prompt do not move it.
+- The trigger is outside our observability. Nothing in Langfuse predicts a
+  terms-enforcement action; the first signal is production `403`s.
+
+*(Lens: irreversible-first — a provider suspension is not a code path we can
+roll back to.)*
+
+### Why the recommendation was declined, and why we proceeded anyway
+
+The CTO recommended checking Vertex AI's terms and planning a move. The founder,
+having seen that recommendation, chose to accept the risk and continue on the
+Gemini developer API. That is the account owner's call to make, and it is
+recorded as made rather than re-litigated.
+
+**The check was done anyway, and it changed the picture.** Vertex AI carries
+*the same* age restriction (Google Cloud Service Specific Terms §20(d), with an
+explicit suspension right in §20(f)). Moving would not have removed this risk —
+so the founder's decision costs us less than it looked like it would when the
+recommendation was written. See
+[`docs/runbooks/vertex-ai-fallback.md`](../runbooks/vertex-ai-fallback.md) for
+the evidence and for what a move would and would not buy.
+
+### What this obliges us to do
+
+1. **Keep the provider swap cheap.** Every model call stays behind
+   `callModel()` in `src/lib/ai/client.ts`. Developer-API-only features are
+   forbidden, because they raise the cost of the one mitigation we have.
+2. **Keep the contingency plan current.** The fallback runbook is reviewed
+   whenever this ADR is.
+3. **Re-decide if the facts change** — see the trigger list below.
+
 ## Why Gemini rather than Anthropic
 
 The founder decided this, and the decision is recorded as made. The engineering
@@ -140,6 +210,14 @@ graded item at all. **This is the upgrade path if a residency requirement
 appears**, and it is a contained change: same models, same SDK family, a
 different client constructor in one file.
 
+**Corrected 23 Sep 2026 — two claims in this paragraph were wrong.** (a) The
+residency it buys is a **US or EU** multi-region pin, not a Singapore one;
+Vertex's contractual ML-processing residency has no `asia-southeast1` option, so
+moving there would put inference *further* from the database, not next to it.
+(b) It does **not** escape the under-18 restriction — Google Cloud's Service
+Specific Terms §20(d) carries the same sentence. Both checks are written up in
+[`docs/runbooks/vertex-ai-fallback.md`](../runbooks/vertex-ai-fallback.md).
+
 **OpenAI.** Rejected. No reason to introduce a third vendor's terms and a third
 pricing model when the founder has decided between the two on the table.
 
@@ -188,7 +266,7 @@ line is not the thing that decides the budget; the Langfuse self-host is.
 | If wrong about | Cost to change |
 | --- | --- |
 | Gemini vs Anthropic/OpenAI | **Low.** [PRO-28](/PRO/issues/PRO-28) is the proof: one client file, one rate-card file, one env var. Traces, prompt versions, cost accounting, and redaction are provider-independent by construction. |
-| Developer API vs Vertex AI | **Low-to-medium.** Same models, same SDK family; a different client constructor plus GCP service-account auth. Grows if we start using developer-API-only features — so don't. |
+| Developer API vs Vertex AI | **Low, and now measured.** `@google/genai` v2.23 reaches Vertex from the *same* client class via `vertexai: true` + `project`/`location`, so the change is `getGemini()` in `src/lib/ai/client.ts` plus env vars and credentials — roughly a day of work, most of it the GCP console session we do not have. Grows if we start using developer-API-only features — so don't. Detail: [`docs/runbooks/vertex-ai-fallback.md`](../runbooks/vertex-ai-fallback.md). |
 | Paid tier being sufficient for children's data | **Unrecoverable for data already sent.** This is the asymmetric one. It is why the constraint is enforced at four code sites and gated on [PRO-75](/PRO/issues/PRO-75) rather than trusted. |
 | Cost per graded item | **Low, and observable.** `costDetails` goes to Langfuse on every call, so drift shows up on a dashboard before it shows up on a bill. |
 | Single-provider boundary | **Low.** Amend this ADR and the allow-list in `vendor-boundary.test.ts` together. |
@@ -200,7 +278,17 @@ Reopen this ADR if any of these happen:
 - Gemini's terms change how the free/paid training distinction works, **or** the
   paid tier's no-training commitment weakens.
 - A residency requirement lands (Thai PDPA guidance, a school-district customer,
-  an investor's diligence) → move to Vertex AI in `asia-southeast1`.
+  an investor's diligence) → Vertex AI is the only lever we have, and it only
+  offers a **US or EU** pin. If the requirement is "data stays in Thailand" or
+  "stays in ASEAN", no Google option satisfies it and this ADR's provider choice
+  has to be reopened, not just its endpoint.
+- **Google suspends or throttles the key on a terms basis** → execute
+  [`docs/runbooks/vertex-ai-fallback.md`](../runbooks/vertex-ai-fallback.md)
+  and bring the founder the re-decision, because the accepted risk above has
+  materialised.
+- The age restriction moves in either direction — Google adds a
+  children's/education carve-out, or tightens enforcement → re-open the accepted
+  risk with the founder.
 - Grading agreement on the eval dataset comes out materially below what the
   Anthropic baseline would have given → bring the numbers to the founder.
 - Monthly Gemini spend exceeds **$100** at under 500 learners → the unit
@@ -236,14 +324,22 @@ implemented-and-unit-tested only; they are end-to-end proven.
   estimate below, which is measured against a real rubric on
   [PRO-8](/PRO/issues/PRO-8).
 
-- **Still unproven: the tier of the key.** See the correction under "Why the paid
-  tier is not optional" — [PRO-75](/PRO/issues/PRO-75).
+- **The tier of the key is confirmed — 23 Sep 2026.** The founder answered on
+  [PRO-75](/PRO/issues/PRO-75) that the project issuing `GEMINI_API_KEY` is
+  linked to an **active billing account**, and confirmed the free/paid terms line
+  is unchanged. That is the only evidence that can exist (no Gemini endpoint
+  reports the tier of the key calling it), and it comes from the person who
+  issued the key. **The children's-data gate this ADR set is therefore open**:
+  real learner answers may now go through `GEMINI_API_KEY` without becoming a
+  third party's training data.
 - **Terms re-read 22 Sep 2026** (Gemini API Additional Terms, last modified
   28 Apr 2026): the free/paid training line is unchanged — paid services are not
   used to improve Google products; unpaid services are, and may be human-reviewed.
   The first re-decision trigger has not fired.
-- **Open blocker found on that read: the same terms forbid use in any service
-  "directed towards or … likely to be accessed by individuals under the age of
-  18."** This applies regardless of billing tier and this ADR did not consider it.
-  No real learner text goes through the Gemini developer API until the founder
-  decides the path on [PRO-75](/PRO/issues/PRO-75).
+- **The under-18 restriction found on that read is now an accepted risk, not an
+  open blocker.** The founder chose on 23 Sep 2026 to carry it. See "Accepted
+  risk" above. It is not closed and it is not solved; it is owned.
+- **Other gates that are still shut and that this ADR does not control:**
+  [PRO-74](/PRO/issues/PRO-74) (leaked Langfuse key not yet rotated),
+  [PRO-34](/PRO/issues/PRO-34) (Langfuse still open to self-signup),
+  [PRO-16](/PRO/issues/PRO-16) (no proven Postgres restore).
