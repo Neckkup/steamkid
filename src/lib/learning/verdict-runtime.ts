@@ -15,6 +15,7 @@
 
 import { Pool } from "pg";
 
+import { pgConnectionOptions } from "@/lib/db/pg-connection";
 import type { SqlExecutor } from "@/lib/db/sql";
 import { env } from "@/lib/env";
 
@@ -50,6 +51,6 @@ export function resolveVerdictStore(): VerdictStore | null {
   if (!env.DATABASE_URL) return null;
 
   const cache = globalThis as unknown as { steamkidVerdictPool?: Pool };
-  cache.steamkidVerdictPool ??= new Pool({ connectionString: env.DATABASE_URL });
+  cache.steamkidVerdictPool ??= new Pool(pgConnectionOptions(env.DATABASE_URL));
   return new SqlVerdictStore(cache.steamkidVerdictPool);
 }

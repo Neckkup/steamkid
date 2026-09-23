@@ -1,6 +1,7 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 
+import { pgConnectionOptions } from "@/lib/db/pg-connection";
 import { env } from "@/lib/env";
 
 /**
@@ -16,7 +17,7 @@ function createClient(): PrismaClient {
   if (!env.DATABASE_URL) {
     throw new Error("DATABASE_URL is not set; the database is unavailable.");
   }
-  const adapter = new PrismaPg({ connectionString: env.DATABASE_URL });
+  const adapter = new PrismaPg(pgConnectionOptions(env.DATABASE_URL));
   return new PrismaClient({ adapter });
 }
 

@@ -18,6 +18,7 @@
  * screen it feeds.
  */
 
+import { pgConnectionOptions } from "@/lib/db/pg-connection";
 import type { SqlExecutor } from "@/lib/db/sql";
 import { env } from "@/lib/env";
 import { resolveDemoDb } from "@/lib/growth/runtime";
@@ -49,7 +50,7 @@ async function reviewDb(): Promise<SqlExecutor | null> {
   if (env.DATABASE_URL) {
     const { Pool } = await import("pg");
     const cache = globalThis as unknown as { steamkidReviewPool?: InstanceType<typeof Pool> };
-    cache.steamkidReviewPool ??= new Pool({ connectionString: env.DATABASE_URL });
+    cache.steamkidReviewPool ??= new Pool(pgConnectionOptions(env.DATABASE_URL));
     return cache.steamkidReviewPool;
   }
 

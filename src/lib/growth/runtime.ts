@@ -11,6 +11,7 @@
 
 import { Pool } from "pg";
 
+import { pgConnectionOptions } from "@/lib/db/pg-connection";
 import type { SqlExecutor } from "@/lib/db/sql";
 import { env } from "@/lib/env";
 
@@ -31,7 +32,7 @@ function growthDb(): SqlExecutor | null {
   if (!env.DATABASE_URL) return null;
 
   const cache = globalThis as unknown as { steamkidGrowthPool?: Pool };
-  cache.steamkidGrowthPool ??= new Pool({ connectionString: env.DATABASE_URL });
+  cache.steamkidGrowthPool ??= new Pool(pgConnectionOptions(env.DATABASE_URL));
   return cache.steamkidGrowthPool;
 }
 

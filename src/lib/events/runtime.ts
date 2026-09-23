@@ -8,6 +8,7 @@
 
 import { Pool } from "pg";
 
+import { pgConnectionOptions } from "@/lib/db/pg-connection";
 import type { SqlExecutor } from "@/lib/db/sql";
 import { env } from "@/lib/env";
 
@@ -41,7 +42,7 @@ export function getBehaviourDb(): SqlExecutor | null {
 
   const cache = globalThis as unknown as { steamkidEventPool?: Pool };
   if (!cache.steamkidEventPool) {
-    cache.steamkidEventPool = new Pool({ connectionString: env.DATABASE_URL });
+    cache.steamkidEventPool = new Pool(pgConnectionOptions(env.DATABASE_URL));
   }
   return cache.steamkidEventPool;
 }

@@ -1,68 +1,566 @@
-// steamkid data model.
+// steamkid data model — GENERATED ARTIFACT, NOT THE SCHEMA.
 //
-// ⚠️ THIS FILE IS NOT THE SCHEMA. Read `prisma/migrations/` instead.
+// `data-schema` §7 rule 3 makes DDL SQL-first: `prisma/migrations/*/migration.sql`
+// is the source of truth. This file is re-synced from a live database with
+// `prisma db pull` and exists so the typed client matches what is really there.
+// Never hand-edit a model here to change the database — write a migration.
 //
-// data-schema §7 rule 3 makes DDL SQL-first: the migrations in
-// `prisma/migrations/*/migration.sql` are the source of truth, and this file is
-// an artifact that `prisma db pull` re-syncs from a live database. No database
-// has been provisioned yet (PRO-68, PRO-70), so it has never been pulled and
-// shows two models out of roughly twenty tables.
+// Last pulled: 2026-09-23 from the Supabase project in `ap-southeast-1`, after
+// `prisma migrate deploy` applied all four migrations (PRO-68). Before that date
+// this file had never been pulled and described two tables that do not exist,
+// which already cost one ticket its premise (PRO-76).
 //
-// What the migrations already contain and this file does not: the four schemas
-// (`identity` / `app` / `events` / `ml`), the partitioned behaviour pipe, the
-// content and attempt tables, `app.ai_verdict` and `app.ai_verdict_criterion`,
-// `app.teacher_correction`, and the consent-gated `ml` export views.
+// Two things `db pull` does not bring back, so read the SQL for them:
 //
-// Reading this file as "what exists" has already cost one ticket's premise
-// (PRO-76 was written believing there was no verdict table). Re-pull it the day
-// a database exists; until then, `prisma/migrations/` is the answer.
+//   1. The `ml.*` consent-filtered export views. Introspecting views needs the
+//      `views` preview feature; without it they are simply absent here. They are
+//      the export surface, so their absence from this file means nothing.
+//   2. Triggers, check constraints and the `PARTITION BY RANGE` on
+//      `events.behavior_event`. Prisma prints an advisory for the constraints and
+//      drops the rest; the append-only guards live only in the migrations.
 //
-// The two constraints below are the ones expensive to retrofit, kept here
-// because the generated client leans on them:
-//
-//   1. A pseudonymous `Learner.id` surrogate key. Nothing outside our
-//      infrastructure ever sees anything else for a child.
-//   2. A consent record that is required before any behaviour event is stored.
-//
-// Event tables are append-only with a versioned payload; never mutate history
-// in place, add a new row and a new `payloadVersion` instead.
+// Event tables are append-only with a versioned payload; never mutate history in
+// place, add a new row and a new `payload_version` instead.
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["partialIndexes"]
 }
 
-// Prisma 7 moved connection URLs out of the schema: the CLI reads them from
-// `prisma.config.ts`, and the runtime client gets an explicit driver adapter
-// (see `src/lib/db.ts`).
 datasource db {
   provider = "postgresql"
+  schemas  = ["app", "events", "identity", "ml"]
 }
 
-/// A child, referenced externally only by this pseudonymous id.
-/// Identifying fields (name, birth date, guardian contact) are added in PRO-7
-/// and must never be joined into an export or an external trace.
-model Learner {
-  id        String          @id @default(cuid())
-  createdAt DateTime        @default(now())
-  consents  ConsentRecord[]
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model ai_verdict {
+  id                   String                 @id @db.Uuid
+  subject_type         String
+  subject_id           String                 @db.Uuid
+  learner_id           String                 @db.Uuid
+  rubric_version_id    String?                @db.Uuid
+  model                String
+  prompt_name          String
+  prompt_version       Int
+  input_snapshot       Json
+  redaction_version    String
+  feedback_text        String?
+  model_confidence     Decimal?               @db.Decimal
+  latency_ms           Int
+  tokens_in            Int?
+  tokens_out           Int?
+  cost_usd             Decimal?               @db.Decimal(10, 6)
+  langfuse_trace_id    String                 @db.Uuid
+  correlation_id       String                 @db.Uuid
+  verdict_status       String
+  created_at           DateTime               @default(now()) @db.Timestamptz(6)
+  item_id              String                 @db.Uuid
+  attempt_number       Int
+  rubric_version       String
+  grade_version        String
+  normalized_score     Decimal?               @db.Decimal
+  result               String?
+  unscorable_reason    String?
+  blocked_stage        String?
+  status_detail        String?
+  next_step            String?
+  instruction_attempt  Boolean                @default(false)
+  learner              learner                @relation(fields: [learner_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  // Hand-renamed, and re-introspection preserves it. `app.ai_verdict` has both a
+  // `rubric_version` text column (the version string copied onto the verdict) and
+  // a `rubric_version_id` FK to `app.rubric_version`, so introspection wants to
+  // call the scalar and the relation the same thing and the schema fails to
+  // validate. Only the relation field is renamed; no column moves.
+  rubric_version_ref   rubric_version?        @relation(fields: [rubric_version_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  ai_verdict_criterion ai_verdict_criterion[]
+  teacher_correction   teacher_correction[]
 
-  @@map("learners")
+  @@index([correlation_id], map: "ai_verdict_correlation_idx")
+  @@index([item_id, attempt_number, created_at(sort: Desc)], map: "ai_verdict_item_attempt_idx")
+  @@index([learner_id, created_at(sort: Desc)], map: "ai_verdict_learner_idx")
+  @@index([verdict_status, created_at(sort: Desc)], map: "ai_verdict_status_idx")
+  @@index([subject_type, subject_id, created_at(sort: Desc)], map: "ai_verdict_subject_idx")
+  @@schema("app")
 }
 
-/// Parental/guardian consent. Absence of an active record means we collect
-/// nothing beyond what is required to run the session.
-model ConsentRecord {
-  id            String    @id @default(cuid())
-  learnerId     String    @map("learner_id")
-  learner       Learner   @relation(fields: [learnerId], references: [id], onDelete: Cascade)
-  /// e.g. behaviour_analytics, ai_grading, training_data_export
-  scope         String
-  granted       Boolean
-  /// Version of the privacy notice the guardian actually saw.
-  policyVersion String    @map("policy_version")
-  grantedAt     DateTime  @default(now()) @map("granted_at")
-  revokedAt     DateTime? @map("revoked_at")
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model ai_verdict_criterion {
+  verdict_id String     @db.Uuid
+  skill_code String
+  level      Int
+  weight     Decimal    @db.Decimal
+  reason     String
+  evidence   String?
+  ai_verdict ai_verdict @relation(fields: [verdict_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@index([learnerId, scope])
-  @@map("consent_records")
+  @@id([verdict_id, skill_code])
+  @@index([skill_code], map: "ai_verdict_criterion_skill_idx")
+  @@schema("app")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model attempt {
+  id                     String        @id @db.Uuid
+  learner_id             String        @db.Uuid
+  item_id                String        @db.Uuid
+  session_id             String        @db.Uuid
+  attempt_no             Int
+  started_at             DateTime      @db.Timestamptz(6)
+  submitted_at           DateTime      @db.Timestamptz(6)
+  answer_payload         Json
+  answer_hash            String
+  time_on_item_ms        Int
+  active_time_on_item_ms Int
+  answer_changes         Int           @default(0)
+  hints_used             Int           @default(0)
+  is_final               Boolean       @default(false)
+  low_validity           Boolean       @default(false)
+  suspected_assisted     Boolean       @default(false)
+  correlation_id         String        @db.Uuid
+  exercise_item          exercise_item @relation(fields: [item_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  learner                learner       @relation(fields: [learner_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  session                session       @relation(fields: [session_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([learner_id, item_id, attempt_no])
+  @@index([correlation_id], map: "attempt_correlation_idx")
+  @@index([session_id], map: "attempt_session_idx")
+  @@schema("app")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model consent_record {
+  id                   String           @id @db.Uuid
+  learner_id           String           @db.Uuid
+  guardian_user_id     String           @db.Uuid
+  policy_version       String
+  scope                String
+  granted              Boolean
+  method               String
+  evidence             Json
+  effective_at         DateTime         @default(now()) @db.Timestamptz(6)
+  superseded_by        String?          @db.Uuid
+  user_account         user_account     @relation(fields: [guardian_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  learner              learner          @relation(fields: [learner_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  consent_record       consent_record?  @relation("consent_recordToconsent_record", fields: [superseded_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_consent_record consent_record[] @relation("consent_recordToconsent_record")
+
+  @@index([learner_id, scope, effective_at(sort: Desc)], map: "consent_record_lookup_idx")
+  @@schema("app")
+}
+
+model course {
+  id         String   @id @db.Uuid
+  slug       String   @unique
+  title      String
+  subject    String
+  grade_band String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  lesson     lesson[]
+
+  @@schema("app")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model exercise_item {
+  id                String          @id @db.Uuid
+  lesson_id         String          @db.Uuid
+  item_type         String
+  prompt            String
+  correct_answer    Json?
+  difficulty        Int
+  difficulty_weight Decimal         @db.Decimal
+  max_attempts      Int             @default(3)
+  hint_texts        String[]        @default([])
+  rubric_version_id String?         @db.Uuid
+  skill_weights     Json
+  content_version   Int             @default(1)
+  attempt           attempt[]
+  lesson            lesson          @relation(fields: [lesson_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  rubric_version    rubric_version? @relation(fields: [rubric_version_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([lesson_id], map: "exercise_item_lesson_idx")
+  @@schema("app")
+}
+
+model guardian_link {
+  guardian_user_id String       @db.Uuid
+  learner_id       String       @db.Uuid
+  relationship     String
+  verified_at      DateTime?    @db.Timestamptz(6)
+  user_account     user_account @relation(fields: [guardian_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  learner          learner      @relation(fields: [learner_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([guardian_user_id, learner_id])
+  @@index([learner_id], map: "guardian_link_learner_idx")
+  @@schema("app")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model learner {
+  id                  String                @id @db.Uuid
+  public_ref          String                @unique @db.Uuid
+  grade_band          String
+  locale              String                @default("th-TH")
+  status              String                @default("active")
+  consent_state       String                @default("")
+  created_at          DateTime              @default(now()) @db.Timestamptz(6)
+  deleted_at          DateTime?             @db.Timestamptz(6)
+  ai_verdict          ai_verdict[]
+  attempt             attempt[]
+  consent_record      consent_record[]
+  guardian_link       guardian_link[]
+  learning_path_step  learning_path_step[]
+  skill_state         skill_state[]
+  skill_state_history skill_state_history[]
+  submission          submission[]
+  session             session[]
+  learner_profile     learner_profile?
+
+  @@schema("app")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model learning_path_step {
+  id                String    @id @db.Uuid
+  learner_id        String    @db.Uuid
+  target_type       String
+  target_id         String    @db.Uuid
+  reason            Json
+  policy_version    String
+  rank              Int
+  status            String    @default("offered")
+  offered_at        DateTime  @default(now()) @db.Timestamptz(6)
+  resolved_at       DateTime? @db.Timestamptz(6)
+  langfuse_trace_id String?   @db.Uuid
+  correlation_id    String    @db.Uuid
+  learner           learner   @relation(fields: [learner_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([learner_id, rank], map: "learning_path_step_learner_idx")
+  @@schema("app")
+}
+
+model lesson {
+  id              String          @id @db.Uuid
+  course_id       String          @db.Uuid
+  slug            String          @unique
+  title           String
+  order_index     Int
+  content_version Int             @default(1)
+  est_minutes     Int?
+  media           Json            @default("[]")
+  skill_tags      String[]        @default([])
+  exercise_item   exercise_item[]
+  course          course          @relation(fields: [course_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  submission      submission[]
+
+  @@index([course_id, order_index], map: "lesson_course_idx")
+  @@schema("app")
+}
+
+model rubric {
+  id             String           @id @db.Uuid
+  code           String           @unique
+  name           String
+  rubric_version rubric_version[]
+
+  @@schema("app")
+}
+
+model rubric_version {
+  id                      String          @id @db.Uuid
+  rubric_id               String          @db.Uuid
+  version                 Int
+  criteria                Json
+  langfuse_prompt_name    String?
+  langfuse_prompt_version Int?
+  created_at              DateTime        @default(now()) @db.Timestamptz(6)
+  ai_verdict              ai_verdict[]
+  exercise_item           exercise_item[]
+  rubric                  rubric          @relation(fields: [rubric_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([rubric_id, version])
+  @@schema("app")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model skill {
+  skill_code          String                @id
+  kind                String
+  name_th             String
+  name_en             String
+  signal_spec         String
+  skill_map_version   String
+  skill_state         skill_state[]
+  skill_state_history skill_state_history[]
+
+  @@schema("app")
+}
+
+model skill_state {
+  learner_id           String    @db.Uuid
+  skill_code           String
+  mastery              Decimal   @db.Decimal
+  confidence           Decimal   @db.Decimal
+  evidence_count       Int
+  assist_index         Decimal   @db.Decimal
+  growth_label         String
+  growth_kind          String?
+  growth_delta         Decimal?  @db.Decimal
+  reason_codes         String[]  @default([])
+  last_evidence_at     DateTime? @db.Timestamptz(6)
+  growth_model_version String
+  computed_at          DateTime  @db.Timestamptz(6)
+  learner              learner   @relation(fields: [learner_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  skill                skill     @relation(fields: [skill_code], references: [skill_code], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([learner_id, skill_code])
+  @@schema("app")
+}
+
+model skill_state_history {
+  id                   String   @id @db.Uuid
+  learner_id           String   @db.Uuid
+  skill_code           String
+  snapshot_at          DateTime @db.Timestamptz(6)
+  mastery              Decimal  @db.Decimal
+  confidence           Decimal  @db.Decimal
+  assist_index         Decimal  @db.Decimal
+  evidence_count       Int
+  growth_label         String
+  growth_kind          String?
+  growth_delta         Decimal? @db.Decimal
+  reason_codes         String[] @default([])
+  growth_model_version String
+  learner              learner  @relation(fields: [learner_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  skill                skill    @relation(fields: [skill_code], references: [skill_code], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([learner_id, skill_code, snapshot_at(sort: Desc)], map: "skill_state_history_idx")
+  @@schema("app")
+}
+
+model submission {
+  id               String             @id @db.Uuid
+  learner_id       String             @db.Uuid
+  lesson_id        String             @db.Uuid
+  draft_count      Int                @default(0)
+  content          Json
+  submitted_at     DateTime?          @db.Timestamptz(6)
+  total_active_ms  Int                @default(0)
+  correlation_id   String             @db.Uuid
+  learner          learner            @relation(fields: [learner_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  lesson           lesson             @relation(fields: [lesson_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  submission_draft submission_draft[]
+
+  @@index([correlation_id], map: "submission_correlation_idx")
+  @@index([learner_id, submitted_at(sort: Desc)], map: "submission_learner_idx")
+  @@schema("app")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model submission_draft {
+  id            String     @id @db.Uuid
+  submission_id String     @db.Uuid
+  draft_no      Int
+  content       Json
+  char_count    Int
+  created_at    DateTime   @default(now()) @db.Timestamptz(6)
+  submission    submission @relation(fields: [submission_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([submission_id, draft_no])
+  @@schema("app")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model teacher_correction {
+  id                                                                         String       @id @db.Uuid
+  ai_verdict_id                                                              String       @db.Uuid
+  teacher_user_id                                                            String       @db.Uuid
+  corrected_feedback                                                         String?
+  reason_code                                                                String
+  note                                                                       String?
+  langfuse_score_id                                                          String?
+  created_at                                                                 DateTime     @default(now()) @db.Timestamptz(6)
+  skill_code                                                                 String
+  original_level                                                             Int
+  corrected_level                                                            Int
+  teacher_role                                                               String       @default("teacher")
+  user_account_teacher_correction_teacher_user_id_teacher_roleTouser_account user_account @relation("teacher_correction_teacher_user_id_teacher_roleTouser_account", fields: [teacher_user_id, teacher_role], references: [id, role], onDelete: NoAction, onUpdate: NoAction, map: "teacher_correction_actor_is_teacher")
+  ai_verdict                                                                 ai_verdict   @relation(fields: [ai_verdict_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user_account_teacher_correction_teacher_user_idTouser_account              user_account @relation("teacher_correction_teacher_user_idTouser_account", fields: [teacher_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([ai_verdict_id, skill_code, created_at(sort: Desc)], map: "teacher_correction_skill_idx")
+  @@index([ai_verdict_id, created_at(sort: Desc)], map: "teacher_correction_verdict_idx")
+  @@schema("app")
+}
+
+/// This table is a partition table and requires additional setup for migrations. Visit https://pris.ly/d/partition-tables for more info.
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model behavior_event {
+  event_id               String   @db.Uuid
+  learner_id             String   @db.Uuid
+  session_id             String   @db.Uuid
+  event_time             DateTime @db.Timestamptz(6)
+  occurred_at            DateTime @db.Timestamptz(6)
+  received_at            DateTime @default(now()) @db.Timestamptz(6)
+  client_seq             BigInt
+  event_name             String
+  event_version          Int
+  lesson_id              String?  @db.Uuid
+  item_id                String?  @db.Uuid
+  submission_id          String?  @db.Uuid
+  path_step_id           String?  @db.Uuid
+  verdict_id             String?  @db.Uuid
+  payload                Json
+  correlation_id         String?  @db.Uuid
+  consent_scope_at_write String
+  registry_version       String
+
+  @@id([learner_id, event_id, event_time])
+  @@index([correlation_id], map: "behavior_event_correlation_idx", where: raw("(correlation_id IS NOT NULL)"))
+  @@index([learner_id, event_time(sort: Desc)], map: "behavior_event_learner_time_idx")
+  @@index([event_name, event_time(sort: Desc)], map: "behavior_event_name_time_idx")
+  @@index([session_id, client_seq], map: "behavior_event_session_seq_idx")
+  @@schema("events")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model dead_letter {
+  id               String    @id @db.Uuid
+  learner_id       String?   @db.Uuid
+  session_id       String?   @db.Uuid
+  event_id         String?   @db.Uuid
+  event_name       String?
+  event_version    Int?
+  registry_version String?
+  occurred_at      DateTime? @db.Timestamptz(6)
+  received_at      DateTime  @default(now()) @db.Timestamptz(6)
+  reason           String
+  detail           String[]  @default([])
+  payload_shape    Json      @default("{}")
+
+  @@index([reason, received_at(sort: Desc)], map: "dead_letter_reason_idx")
+  @@schema("events")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model event_registry {
+  event_name             String
+  event_version          Int
+  event_group            String
+  trigger_description    String
+  payload_schema         Json
+  pii_class              String
+  retention_days         Int
+  exportable             Boolean
+  required_consent_scope String   @default("behaviour_events")
+  registry_version       String
+  seeded_at              DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([event_name, event_version])
+  @@schema("events")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model session {
+  id               String    @id @db.Uuid
+  learner_id       String    @db.Uuid
+  started_at       DateTime  @db.Timestamptz(6)
+  ended_at         DateTime? @db.Timestamptz(6)
+  end_reason       String    @default("open")
+  duration_ms      BigInt    @default(0)
+  active_ms        BigInt    @default(0)
+  client_active_ms BigInt?
+  discarded_ms     BigInt    @default(0)
+  scorable         Boolean   @default(false)
+  event_count      Int       @default(0)
+  heartbeat_count  Int       @default(0)
+  anomalies        Json      @default("[]")
+  device_class     String?
+  ua_family        String?
+  app_version      String?
+  ip_hash          String?
+  clock_skew_ms    Int       @default(0)
+  reconstructed_at DateTime? @db.Timestamptz(6)
+  attempt          attempt[]
+  learner          learner   @relation(fields: [learner_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([learner_id, started_at(sort: Desc)], map: "session_learner_idx")
+  @@schema("events")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model learner_profile {
+  learner_id       String   @id @db.Uuid
+  display_name     String
+  birth_year_month DateTime @db.Date
+  avatar_key       String?
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  learner          learner  @relation(fields: [learner_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("identity")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model pii_access_log {
+  id            String        @id @db.Uuid
+  actor_user_id String?       @db.Uuid
+  actor_kind    String
+  learner_id    String        @db.Uuid
+  purpose       String
+  accessed_at   DateTime      @default(now()) @db.Timestamptz(6)
+  user_account  user_account? @relation(fields: [actor_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([learner_id, accessed_at(sort: Desc)], map: "pii_access_log_learner_idx")
+  @@schema("identity")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model user_account {
+  id                                                                               String               @id @db.Uuid
+  role                                                                             String
+  email                                                                            String               @unique @db.Citext
+  auth_provider                                                                    String
+  auth_subject_id                                                                  String
+  display_name                                                                     String?
+  email_verified_at                                                                DateTime?            @db.Timestamptz(6)
+  created_at                                                                       DateTime             @default(now()) @db.Timestamptz(6)
+  deleted_at                                                                       DateTime?            @db.Timestamptz(6)
+  consent_record                                                                   consent_record[]
+  guardian_link                                                                    guardian_link[]
+  teacher_correction_teacher_correction_teacher_user_id_teacher_roleTouser_account teacher_correction[] @relation("teacher_correction_teacher_user_id_teacher_roleTouser_account")
+  teacher_correction_teacher_correction_teacher_user_idTouser_account              teacher_correction[] @relation("teacher_correction_teacher_user_idTouser_account")
+  pii_access_log                                                                   pii_access_log[]
+
+  @@unique([auth_provider, auth_subject_id])
+  @@unique([id, role])
+  @@schema("identity")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model training_export_run {
+  id                  String   @id @db.Uuid
+  spec_version        String
+  dataset_kind        String
+  filters             Json
+  consent_snapshot_at DateTime @db.Timestamptz(6)
+  row_count           Int
+  output_uri          String
+  checksum            String
+  redaction_version   String
+  created_by_user_id  String?  @db.Uuid
+  created_at          DateTime @default(now()) @db.Timestamptz(6)
+
+  @@schema("ml")
 }

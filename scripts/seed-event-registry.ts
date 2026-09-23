@@ -17,6 +17,7 @@
 
 import { Pool } from "pg";
 
+import { pgConnectionOptions } from "../src/lib/db/pg-connection";
 import registryFile from "../src/lib/events/event-registry.v1.json";
 import {
   assertRegistryInvariants,
@@ -95,7 +96,7 @@ async function main(): Promise<void> {
     throw new Error("DATABASE_URL is not set. Use --print to emit SQL instead.");
   }
 
-  const pool = new Pool({ connectionString });
+  const pool = new Pool(pgConnectionOptions(connectionString));
   try {
     for (const row of rows) {
       await pool.query(UPSERT, row);
