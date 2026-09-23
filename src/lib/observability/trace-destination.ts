@@ -2,8 +2,13 @@ import { env } from "@/lib/env";
 import {
   checkLangfuseHardening,
   type HardeningCheckId,
+  type HardeningFinding,
   type LangfuseHardeningReport,
 } from "@/lib/observability/langfuse-hardening";
+import {
+  checkCredentialsInUse,
+  checkLeakedCredentialsRevoked,
+} from "@/lib/observability/leaked-credentials";
 
 /**
  * The runtime gate between a real learner's trace and an unhardened Langfuse.
@@ -30,6 +35,10 @@ import {
  *    that names a child does not.
  * 3. **Never silent.** A suppressed trace logs the failing check ids and the
  *    remedy. Observability that disappears without a word is worse than none.
+ *
+ * A hardened instance is necessary and not sufficient, so the same gate also
+ * carries the findings from `leaked-credentials.ts`: a locked front door does
+ * not help while a published key still opens it (PRO-101).
  */
 
 export type TraceAudience = "learner" | "synthetic";
@@ -90,7 +99,39 @@ export interface TraceDestinationOptions {
   baseUrl?: string;
   /** Injected in tests; defaults to the real hardening probe. */
   checkImpl?: typeof checkLangfuseHardening;
+  /** Injected in tests; defaults to the real leaked-credential checks. */
+  credentialsImpl?: CredentialCheckImpl;
 }
+
+export type CredentialCheckImpl = (baseUrl: string) => Promise<HardeningFinding[]>;
+
+/**
+ * Whether a credential we published is still a credential.
+ *
+ * Runs against the same base URL and inside the same cached verdict as the
+ * hardening probe, so a leaked key that still opens the project costs one probe
+ * per `PASS_TTL_MS` rather than one per graded answer.
+ */
+const credentialChecks: CredentialCheckImpl = (baseUrl) =>
+  Promise.all([
+    checkCredentialsInUse({
+      langfusePublicKey: env.LANGFUSE_PUBLIC_KEY,
+      langfuseSecretKey: env.LANGFUSE_SECRET_KEY,
+      geminiApiKey: env.GEMINI_API_KEY,
+    }),
+    checkLeakedCredentialsRevoked({
+      baseUrl,
+      revoked: {
+        publicKey: env.LANGFUSE_REVOKED_PUBLIC_KEY,
+        secretKey: env.LANGFUSE_REVOKED_SECRET_KEY,
+      },
+      control: {
+        publicKey: env.LANGFUSE_PUBLIC_KEY,
+        secretKey: env.LANGFUSE_SECRET_KEY,
+      },
+      timeoutMs: PROBE_TIMEOUT_MS,
+    }),
+  ]);
 
 /**
  * Shorter than the probe's own 10s default: this sits in front of a child's
@@ -158,6 +199,7 @@ const UNVERIFIED: LangfuseHardeningReport = { ok: false, reachable: false, findi
 async function hardeningReport(
   baseUrl: string,
   checkImpl: typeof checkLangfuseHardening,
+  credentialsImpl: CredentialCheckImpl,
 ): Promise<LangfuseHardeningReport> {
   const key = gateKey(baseUrl);
   const now = Date.now();
@@ -178,6 +220,41 @@ async function hardeningReport(
           `suppressed until it answers.`,
       );
       report = UNVERIFIED;
+    }
+
+    // Only worth asking who else holds a key to this instance once the instance
+    // has answered at all. An unreachable one is already blocked, and probing a
+    // host that is not there produces a second inconclusive answer, not a
+    // second reason.
+    if (report.reachable) {
+      let credentials: HardeningFinding[];
+      try {
+        credentials = await credentialsImpl(baseUrl);
+      } catch (error) {
+        console.error(
+          `[langfuse] leaked-credential check against ${baseUrl} failed to run (${
+            error instanceof Error ? error.message : "unknown error"
+          }). Treating the published pair as still live: real learner traces will ` +
+            `be suppressed until it answers.`,
+        );
+        credentials = [
+          {
+            id: "leaked_credentials_live",
+            ok: false,
+            severity: "blocker",
+            reason:
+              "The check that proves the 2026-09-19 leaked pair is dead could not " +
+              "run, so nothing here says it is.",
+            remedy: "Re-run `npm run langfuse:verify` once the instance answers normally.",
+          },
+        ];
+      }
+      const findings = [...report.findings, ...credentials];
+      report = {
+        reachable: report.reachable,
+        findings,
+        ok: findings.every((finding) => finding.ok),
+      };
     }
 
     const passed = report.ok && report.reachable;
@@ -266,7 +343,11 @@ export async function resolveTraceDestination(
     };
   }
 
-  const report = await hardeningReport(baseUrl, options.checkImpl ?? checkLangfuseHardening);
+  const report = await hardeningReport(
+    baseUrl,
+    options.checkImpl ?? checkLangfuseHardening,
+    options.credentialsImpl ?? credentialChecks,
+  );
 
   if (!report.reachable) {
     return {
@@ -292,8 +373,8 @@ export async function resolveTraceDestination(
       allowed: false,
       audience,
       reason:
-        `${baseUrl} fails hardening (${blockers.map((finding) => finding.id).join(", ")}), ` +
-        `so a trace bound to a real learner is not sent to it.`,
+        `${baseUrl} is not cleared to hold a real learner's trace ` +
+        `(${blockers.map((finding) => finding.id).join(", ")}), so this one is not sent to it.`,
       blockedBy: blockers.map((finding) => finding.id),
       remedy: blockers[0].remedy,
     };

@@ -55,6 +55,27 @@ vi.mock("@google/genai", async (importOriginal) => {
   return { ...actual, GoogleGenAI: FakeGoogleGenAI };
 });
 
+/**
+ * These tests assert what `callModel` puts on a trace. The PRO-101 gate decides
+ * whether that trace may leave at all, and with the 2026-09-19 leak still open
+ * it would turn every assertion below into "nothing was sent" — a passing-looking
+ * way to test nothing. Stub it clean; the gate is covered in
+ * `trace-destination.test.ts`.
+ */
+vi.mock("@/lib/observability/leaked-credentials", () => {
+  const clean = (id: string) => async () => ({
+    id,
+    ok: true,
+    severity: "blocker" as const,
+    reason: "stubbed clean",
+    remedy: "None needed.",
+  });
+  return {
+    checkCredentialsInUse: clean("leaked_credentials_in_use"),
+    checkLeakedCredentialsRevoked: clean("leaked_credentials_live"),
+  };
+});
+
 let ingestion: FakeIngestion;
 let callModel: typeof import("@/lib/ai/client").callModel;
 let ModelSafetyBlockError: typeof import("@/lib/ai/client").ModelSafetyBlockError;

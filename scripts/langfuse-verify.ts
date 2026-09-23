@@ -15,6 +15,10 @@
 import { env } from "@/lib/env";
 import { checkLangfuseHardening } from "@/lib/observability/langfuse-hardening";
 import {
+  checkCredentialsInUse,
+  checkLeakedCredentialsRevoked,
+} from "@/lib/observability/leaked-credentials";
+import {
   MINIMUM_LANGFUSE_MAJOR,
   PINNED_LANGFUSE_TAG,
   checkLangfuseServerVersion,
@@ -63,12 +67,34 @@ async function main() {
   // instance is safe to put a child's free-text answer into.
   const hardening = await checkLangfuseHardening({ baseUrl });
 
-  for (const finding of hardening.findings) {
+  // And who else holds a key to it. A hardened instance with a published project
+  // key is not a private one (PRO-101).
+  const credentials = await Promise.all([
+    checkCredentialsInUse({
+      langfusePublicKey: env.LANGFUSE_PUBLIC_KEY,
+      langfuseSecretKey: env.LANGFUSE_SECRET_KEY,
+      geminiApiKey: env.GEMINI_API_KEY,
+    }),
+    checkLeakedCredentialsRevoked({
+      baseUrl,
+      revoked: {
+        publicKey: env.LANGFUSE_REVOKED_PUBLIC_KEY,
+        secretKey: env.LANGFUSE_REVOKED_SECRET_KEY,
+      },
+      control: { publicKey: env.LANGFUSE_PUBLIC_KEY, secretKey: env.LANGFUSE_SECRET_KEY },
+    }),
+  ]);
+
+  for (const finding of [...hardening.findings, ...credentials]) {
     if (finding.ok) {
       console.log(`OK  [${finding.id}] ${finding.reason}`);
       continue;
     }
-    console.error(`FAIL [${finding.id}] ${finding.reason}`);
+    // A warning is real and does not stop a trace, so it must not be printed in
+    // the same word as something that does.
+    console.error(
+      `${finding.severity === "blocker" ? "FAIL" : "WARN"} [${finding.id}] ${finding.reason}`,
+    );
     console.error(`     fix: ${finding.remedy}`);
   }
 
@@ -91,11 +117,15 @@ async function main() {
     process.exit(1);
   }
 
-  if (!hardening.ok) {
+  const credentialBlockers = credentials.filter(
+    (finding) => !finding.ok && finding.severity === "blocker",
+  );
+
+  if (!hardening.ok || credentialBlockers.length > 0) {
     console.error(
-      "\nThis instance is capable but not hardened. Do not point a preview or " +
-        "production tier at it, and do not let a real learner trace land in it " +
-        "until the failures above are cleared.",
+      "\nThis instance is capable but not cleared to hold a real learner's " +
+        "trace. Do not point a preview or production tier at it, and do not let " +
+        "a real learner trace land in it until the failures above are cleared.",
     );
     process.exit(1);
   }

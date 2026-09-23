@@ -10,6 +10,26 @@ import { startFakeIngestion, type FakeIngestion } from "@/lib/observability/fake
  * used by children: not "did we call redactDeep", but "what left the process".
  */
 
+/**
+ * This file asks what a trace looks like on the wire, not whether it is allowed
+ * out — that gate has its own file. The leaked-credential check (PRO-101) is
+ * stubbed clean here so it does not quietly rewrite every payload assertion
+ * below into "nothing was sent", which is a passing-looking way to test nothing.
+ */
+vi.mock("@/lib/observability/leaked-credentials", () => {
+  const clean = (id: string) => async () => ({
+    id,
+    ok: true,
+    severity: "blocker" as const,
+    reason: "stubbed clean",
+    remedy: "None needed.",
+  });
+  return {
+    checkCredentialsInUse: clean("leaked_credentials_in_use"),
+    checkLeakedCredentialsRevoked: clean("leaked_credentials_live"),
+  };
+});
+
 let ingestion: FakeIngestion;
 let traceAiCall: typeof import("@/lib/observability/langfuse").traceAiCall;
 let TraceIdentityError: typeof import("@/lib/observability/langfuse").TraceIdentityError;

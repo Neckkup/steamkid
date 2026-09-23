@@ -15,7 +15,19 @@
  * time, before an org, a project, or an API key exists.
  */
 
-export type HardeningCheckId = "instance_live" | "canonical_url_tls" | "open_signup";
+/**
+ * `leaked_credentials_*` are produced by `leaked-credentials.ts` rather than by
+ * this file: they are facts about our own published credentials, not properties
+ * of an instance, and the checks here have to keep working at provisioning time
+ * before any key exists. They share the finding shape so one report can carry
+ * both and `trace-destination.ts` needs exactly one blocker rule.
+ */
+export type HardeningCheckId =
+  | "instance_live"
+  | "canonical_url_tls"
+  | "open_signup"
+  | "leaked_credentials_in_use"
+  | "leaked_credentials_live";
 
 export interface HardeningFinding {
   id: HardeningCheckId;

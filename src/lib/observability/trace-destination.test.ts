@@ -22,6 +22,7 @@ import { startFakeIngestion, type FakeIngestion } from "@/lib/observability/fake
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.doUnmock("@/lib/observability/leaked-credentials");
   vi.resetModules();
 });
 
@@ -149,6 +150,32 @@ describe("hardening gate", () => {
     return (await import("@/lib/observability/langfuse")).traceAiCall;
   }
 
+  /**
+   * The same, with the 2026-09-19 leak taken as closed.
+   *
+   * That state cannot be reached from a test through configuration: proving the
+   * leaked pair is dead means probing with it, and the check pins it by digest
+   * precisely so no stand-in will do. The pin itself is covered in
+   * `leaked-credentials.test.ts`; here it is stubbed out so the hardening
+   * assertions below still say what they were written to say.
+   */
+  async function traceAiCallWithLeakClosed(instance: FakeIngestion, appEnv = "production") {
+    instance.reset();
+    await loadEnv({ ...KEYS, APP_ENV: appEnv, LANGFUSE_BASEURL: instance.baseUrl });
+    const clean = (id: string) => async () => ({
+      id,
+      ok: true,
+      severity: "blocker" as const,
+      reason: "stubbed clean",
+      remedy: "None needed.",
+    });
+    vi.doMock("@/lib/observability/leaked-credentials", () => ({
+      checkCredentialsInUse: clean("leaked_credentials_in_use"),
+      checkLeakedCredentialsRevoked: clean("leaked_credentials_live"),
+    }));
+    return (await import("@/lib/observability/langfuse")).traceAiCall;
+  }
+
   /** The trace-create event, the one that carries the learner binding. */
   function traceCreates(instance: FakeIngestion) {
     return instance.events.filter(
@@ -214,13 +241,44 @@ describe("hardening gate", () => {
   });
 
   it("still sends a real learner's trace to an instance that passes", async () => {
-    const traceAiCall = await traceAiCallAgainst(hardened);
+    const traceAiCall = await traceAiCallWithLeakClosed(hardened);
 
     await traceAiCall(LEARNER_CALL, async () => ({ output: "graded" }));
 
     const [create] = traceCreates(hardened);
     expect(create, "The gate must not block the case it was built to allow.").toBeDefined();
     expect((create.body as { userId?: string }).userId).toBe("learner_7f3a91");
+  });
+
+  /**
+   * PRO-101. A hardened instance is necessary and not sufficient: on 2026-09-23
+   * the `steamkid` project had *two* live key pairs, one of them published in
+   * clear text on PRO-30 four days earlier. Locking the front door does not help
+   * while a copy of the key is in a comment anyone on the board can open, and
+   * redaction does not either — it removes identifiers from inside a trace, and
+   * this is somebody reading everything that is left.
+   */
+  it("refuses a real learner's trace while a published key pair still opens the project", async () => {
+    // No LANGFUSE_REVOKED_* in the environment: nothing here can show the leaked
+    // pair was deleted, and unproven is not the same as closed.
+    const traceAiCall = await traceAiCallAgainst(hardened);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const output = await traceAiCall(LEARNER_CALL, async () => ({ output: "graded" }));
+
+    expect(
+      traceCreates(hardened),
+      "A hardened instance with a leaked project key is not a private one.",
+    ).toHaveLength(0);
+    // The child is still graded, exactly as when hardening fails.
+    expect(output).toBe("graded");
+
+    const said = [...errors.mock.calls, ...warnings.mock.calls].flat().join("\n");
+    expect(said).toMatch(/leaked_credentials_live/);
+
+    errors.mockRestore();
+    warnings.mockRestore();
   });
 
   it("lets a dev/eval trace through an instance that fails hardening", async () => {
@@ -265,7 +323,7 @@ describe("hardening gate", () => {
   });
 
   it("probes the instance once, not once per graded item", async () => {
-    const traceAiCall = await traceAiCallAgainst(hardened);
+    const traceAiCall = await traceAiCallWithLeakClosed(hardened);
 
     for (let i = 0; i < 3; i += 1) {
       await traceAiCall(LEARNER_CALL, async () => ({ output: "graded" }));

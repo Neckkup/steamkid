@@ -143,7 +143,7 @@ owner decided to carry the risk instead.
 | **Decided by** | The founder — the owner of both accounts. |
 | **Date** | 23 September 2026 (answered on [PRO-74](/PRO/issues/PRO-74)). |
 | **Rejected alternative** | Rotate now: new key pair in Langfuse, new key in Google AI Studio, revoke both old ones, update `steamkid/langfuse/public-key`, `steamkid/langfuse/secret-key`, `steamkid/gemini/api-key`. Recommended by the CEO and the CTO, declined by the founder. |
-| **Status** | Live, with a hard expiry — see the gate below. |
+| **Status** | Live, with a hard expiry enforced in code since 23 September 2026 — see the gate below. |
 
 ### What happened
 
@@ -154,9 +154,24 @@ prove nobody read them, and a key that was ever in plaintext is not recoverable
 by deleting the message. The comment stays — the founder chose to keep it, and
 removing it would not make the keys any safer.
 
-Both key sets were confirmed still valid on 23 September 2026: the CTO ran the
-[PRO-73](/PRO/issues/PRO-73) gate with the Langfuse pair (ingestion `207`, trace
-read-back `200`), so the pair carries full project rights, not leftovers.
+A closer probe on 23 September 2026 (PRO-101) found the situation is not the one
+the first paragraph of this section assumed, and the difference matters:
+
+- The Langfuse pair **this app is configured with is no longer the leaked one.**
+  A second pair was issued at some point — most plausibly during the instance
+  rebuild of 20–22 September ([PRO-64](/PRO/issues/PRO-64),
+  [PRO-66](/PRO/issues/PRO-66)) — and nobody recorded it.
+- **The leaked pair was never deleted.** Both pairs answer `200` on
+  `/api/public/projects` and `/api/public/traces` for the `steamkid` project. The
+  earlier "still valid" confirmation via the [PRO-73](/PRO/issues/PRO-73) gate
+  had been run with the pair in use, which cannot answer the question.
+- The **Gemini key in use is still byte-identical to the leaked value** and still
+  authorises calls (`200` from `v1beta/models`).
+
+So rotation here is not "issue a new key". Issuing one already happened and
+changed nothing: the published pair still opens the project. Only deleting the
+old pair does, which is why the code gate below tests the old pair rather than
+comparing the new one.
 
 ### What the risk is, today and after the pilot opens
 
@@ -175,20 +190,36 @@ That is the line this accepted risk stops at.
 
 ### The gate
 
-**No real student trace reaches Langfuse until all three keys are rotated.**
-This is a pilot-launch gate, not a reminder: it is held open as
-[PRO-101](/PRO/issues/PRO-101) and noted on the other pre-pilot gate,
-[PRO-34](/PRO/issues/PRO-34), alongside closing open signup. If it is ever worth
-enforcing in code, it belongs next to the rest of the hardening gate
-(`src/lib/observability/langfuse-hardening.ts`, [PRO-84](/PRO/issues/PRO-84)).
+**No real student trace reaches Langfuse until the leaked pair stops opening the
+project.** As of 23 September 2026 this is enforced in code, not remembered:
+`src/lib/observability/leaked-credentials.ts` runs inside the same gate as the
+hardening checks ([PRO-84](/PRO/issues/PRO-84)), so a trace carrying a
+`learnerRef`, a `sessionId` or a `submissionId` is refused while the leak is
+open. Dev, eval and smoke traces are untouched, and a child is still graded — a
+lost trace is a debugging cost, a leaked answer is not recoverable.
+
+The check is a live probe **with the leaked pair**, not a comparison against the
+key in use, because a comparison would already read as "rotated" today and be
+wrong. Two consequences follow:
+
+- The leaked pair is supplied as `LANGFUSE_REVOKED_PUBLIC_KEY` /
+  `LANGFUSE_REVOKED_SECRET_KEY` from the secret store. The repo holds only
+  SHA-256 of each leaked value, which pins what the check will accept as the
+  thing being tested without being usable as a credential.
+- The gate opens by itself. Delete the old pair and the next probe gets a `401`,
+  the finding flips, and traces flow within five minutes with no deploy. It can
+  open on evidence; it cannot close on a promise.
 
 Clearing it is two minutes of the founder's time and needs nobody else:
 
-1. Langfuse → Project Settings → API Keys → create a new pair, delete the old one.
+1. Langfuse → Project Settings → API Keys → **delete the pair created on
+   19 September 2026.** Do not create another one: the app already uses a newer
+   pair, and creating a third is what made this look fixed the first time.
 2. Google AI Studio → API keys → create a new key, delete the old one.
-3. Paperclip → Secrets → update `steamkid/langfuse/public-key`,
-   `steamkid/langfuse/secret-key`, `steamkid/gemini/api-key`. The existing
-   bindings for the CTO and the AIEngineer keep working; nothing is re-created.
+3. Paperclip → Secrets → update `steamkid/gemini/api-key` with the new value.
+   `steamkid/langfuse/public-key` and `steamkid/langfuse/secret-key` already hold
+   the newer pair and need no change. The existing bindings for the CTO and the
+   AIEngineer keep working; nothing is re-created.
 
 New values go in the Secrets page only. Never in a comment, a commit, or a
 document — including this one.

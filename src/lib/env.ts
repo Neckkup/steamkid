@@ -64,6 +64,22 @@ const schema = z.object({
   LANGFUSE_PUBLIC_KEY: blankAsUndefined(z.string().min(1)),
   LANGFUSE_SECRET_KEY: blankAsUndefined(z.string().min(1)),
   LANGFUSE_BASEURL: blankAsUndefined(z.string().url()),
+
+  /**
+   * The Langfuse key pair that was published in clear text on PRO-30 on
+   * 2026-09-19 — supplied here **so that it can be proven dead**, not so that it
+   * can be used. `leaked-credentials.ts` probes with it and refuses to send a
+   * real learner's trace until the instance answers 401.
+   *
+   * Counter-intuitive but deliberate: the credential we need in order to verify
+   * a revocation is precisely the compromised one. It is pinned by digest at the
+   * check, so a different value cannot stand in for it, and it stays out of the
+   * repo like every other key. Once the pair is deleted in Langfuse these can be
+   * unset — the gate will already have passed on the 401 and the values are then
+   * inert.
+   */
+  LANGFUSE_REVOKED_PUBLIC_KEY: blankAsUndefined(z.string().min(1)),
+  LANGFUSE_REVOKED_SECRET_KEY: blankAsUndefined(z.string().min(1)),
   /**
    * Langfuse tracing environment. Normally derived from `APP_ENV`; override only
    * to carve out a sub-environment (e.g. `ci`, `load-test`) that must not land
