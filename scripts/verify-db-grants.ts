@@ -437,6 +437,98 @@ async function main(): Promise<void> {
             .map((t) => t.tablename)
             .join(", ")}`,
     );
+
+    // ---------------------------------------------------------------------
+    // 9. Views, which every check above silently skipped.
+    //
+    //    Sections 5 and 8 read `pg_tables`, and `pg_tables` does not list
+    //    views. Nine exist — three in `app`, one in `events` and five in `ml`
+    //    — so "steamkid_runtime cannot write to ml" was, until now, a claim
+    //    about the one real table in `ml` and about none of the five
+    //    `ml.v_*` projections the sentence was written to protect.
+    //
+    //    The gap is not cosmetic. A single-table view is auto-updatable, and
+    //    PostgreSQL checks an auto-updatable write against the *view owner's*
+    //    rights on the base table, not the caller's. So `INSERT` on
+    //    `ml.v_consented_learner` granted to the runtime role would write to
+    //    `app.learner` with the owner's authority — a way through the
+    //    consent-filtered projection that reads as read-only everywhere else
+    //    in this file.
+    // ---------------------------------------------------------------------
+    const views = await client.query<{
+      schemaname: string;
+      viewname: string;
+      can_select: boolean;
+      can_insert: boolean;
+      can_update: boolean;
+      can_delete: boolean;
+    }>(
+      `SELECT n.nspname AS schemaname, c.relname AS viewname,
+              has_table_privilege($2, c.oid, 'SELECT') AS can_select,
+              has_table_privilege($2, c.oid, 'INSERT') AS can_insert,
+              has_table_privilege($2, c.oid, 'UPDATE') AS can_update,
+              has_table_privilege($2, c.oid, 'DELETE') AS can_delete
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind IN ('v', 'm') AND n.nspname = ANY($1)
+        ORDER BY 1, 2`,
+      [ALL_SCHEMAS, RUNTIME],
+    );
+
+    for (const schema of ALL_SCHEMAS) {
+      const inSchema = views.rows.filter((v) => v.schemaname === schema);
+      if (inSchema.length === 0) continue;
+      const unreadable = inSchema.filter((v) => !v.can_select);
+      check(
+        `${RUNTIME} can read all ${inSchema.length} view(s) in ${schema}`,
+        unreadable.length === 0,
+        unreadable.length === 0
+          ? "SELECT"
+          : `cannot read: ${unreadable.map((v) => v.viewname).join(", ")}`,
+      );
+      if ((READ_ONLY_SCHEMAS as readonly string[]).includes(schema)) {
+        const writable = inSchema.filter((v) => v.can_insert || v.can_update || v.can_delete);
+        check(
+          `${RUNTIME} cannot write to any view in ${schema}`,
+          writable.length === 0,
+          writable.length === 0
+            ? "no INSERT, UPDATE or DELETE on the training projections"
+            : `WRITABLE: ${writable.map((v) => v.viewname).join(", ")} — an auto-updatable view writes as its owner`,
+        );
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // 10. No function hands the runtime role someone else's authority.
+    //
+    //     A SECURITY DEFINER function executes as its owner. Every function
+    //     in these schemas is owned by whoever ran the migration — today
+    //     `steamkid_app`, after the cutover `steamkid_migrate` — so one
+    //     marked SECURITY DEFINER and executable by the runtime role would
+    //     be a DDL-capable credential reachable from application code, and
+    //     section 4's ownership argument would stop being true.
+    //
+    //     All ten are SECURITY INVOKER today. That is the property worth
+    //     pinning: it costs a migration one word to lose it.
+    // ---------------------------------------------------------------------
+    const definers = await client.query<{ fn: string; owner: string }>(
+      `SELECT format('%I.%I', n.nspname, p.proname) AS fn,
+              p.proowner::regrole::text AS owner
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = ANY($1)
+          AND p.prosecdef
+          AND has_function_privilege($2, p.oid, 'EXECUTE')
+        ORDER BY 1`,
+      [ALL_SCHEMAS, RUNTIME],
+    );
+    check(
+      `no SECURITY DEFINER function is executable by ${RUNTIME}`,
+      definers.rows.length === 0,
+      definers.rows.length === 0
+        ? "every function runs as its caller"
+        : `ESCALATION: ${definers.rows
+            .map((d) => `${d.fn} runs as ${d.owner}`)
+            .join(", ")}`,
+    );
   } finally {
     await client.end();
   }

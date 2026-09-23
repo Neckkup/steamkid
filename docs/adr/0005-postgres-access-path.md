@@ -280,6 +280,73 @@ owner, and that the catalog, not the exit code, is what says whether they
 worked. It is also the second time today that this database has reported success
 for something that did not happen; both times `verify:grants` is what caught it.
 
+### The cutover was pre-flighted against the catalog before it was run
+
+Each of the three times this split regressed, it regressed silently, so the
+remaining step — `REASSIGN OWNED BY steamkid_app TO steamkid_migrate` — was
+measured before it was reached rather than after it failed. Four questions, all
+answered 2026-09-23 against the live database:
+
+**Can anyone actually run it?** `REASSIGN OWNED` requires membership in both the
+source and the target role. Neither application role is superuser and neither is
+`postgres` — only `supabase_admin` is. But `pg_auth_members` shows `postgres`
+holds membership in `steamkid_app`, `steamkid_migrate` and `steamkid_runtime`,
+with `ADMIN` on each. So the statement runs as `postgres`, and only as
+`postgres`.
+
+**What does it move?** Everything `steamkid_app` owns: the four schemas, 31
+tables (one of them partitioned) plus 9 views, 87 indexes, 10 functions, 41
+composite and enum types, and `public._prisma_migrations`. Ownership carries the
+ACL with it — `ALTER ... OWNER` rewrites the old owner out of both the grantor
+and the grantee position — so the runtime role's DML survives the move and needs
+no re-`GRANT`. That is why `DROP OWNED` must come after the reassignment and not
+before: run in the other order, every grant whose grantor is `steamkid_app`
+disappears with it.
+
+**Does anything escalate when the owner changes?** No. All 10 functions are
+`SECURITY INVOKER`. Had one been `SECURITY DEFINER` and executable by
+`steamkid_runtime`, the cutover would have handed application code a function
+executing with the migrator's DDL rights, and the ownership argument this whole
+document rests on would have stopped being true. `verify:grants` now asserts the
+absence permanently, because it costs one word in a migration to lose it.
+
+**Does the runtime role still work afterwards?** The one operation that looked
+like it would break is monthly partition creation: `events.ensure_month_partition`
+issues `CREATE TABLE ... PARTITION OF`, it is `SECURITY INVOKER`, and
+`steamkid_runtime` has no `CREATE` anywhere — so called on the runtime
+connection it fails with `42501` and behaviour events for the new month have
+nowhere to land. `scripts/ensure-partitions.ts` already requires `DIRECT_URL`
+and refuses to fall back to `DATABASE_URL`, so this is closed. It is recorded
+here because the failure would arrive at a month boundary, long after anyone
+connected it to a role change, and "data you don't capture today is gone
+forever" is the one loss this schema cannot undo.
+
+### Views were outside every check, including the one about `ml`
+
+`verify:grants` read `pg_tables` throughout, and `pg_tables` does not list views.
+Nine exist — three in `app`, one in `events`, five in `ml` — so the assertion
+"`steamkid_runtime` cannot write to `ml`" was a statement about the single real
+table in `ml` and about none of the five `ml.v_*` projections the control exists
+to protect.
+
+That gap had teeth. A single-table view is auto-updatable, and PostgreSQL checks
+an auto-updatable write against the **view owner's** rights on the base table,
+not the caller's. `INSERT` on `ml.v_consented_learner` granted to the runtime
+role would therefore write to `app.learner` with the owner's authority — through
+the consent-filtered projection, past a read-only control that every other check
+in the file reported as intact.
+
+Both properties hold today (43/43) and both were made to fail against the live
+database first: granting `INSERT` on `ml.v_consented_learner` and creating one
+`SECURITY DEFINER` function produced
+
+```
+FAIL  steamkid_runtime cannot write to any view in ml — WRITABLE: v_consented_learner — an auto-updatable view writes as its owner
+FAIL  no SECURITY DEFINER function is executable by steamkid_runtime — ESCALATION: app.__probe_secdef runs as steamkid_app
+```
+
+after which `relacl` was compared before and after and restored byte for byte.
+
 ### `citext` lives in `public`, on purpose
 
 Migration 1 declares `email citext` unqualified. `citext` was absent from the fresh
@@ -522,7 +589,31 @@ The check that proves this ADR, in order:
    role we hold can create there — `steamkid_app` lacks `CREATE` on `public`
    and only `steamkid_migrate` has it. That inability is the finding, not a gap
    in the proof.
-7. `prisma migrate deploy` applies all four migrations unedited as
+7. Views and `SECURITY DEFINER` are covered — **done 2026-09-23**, five further
+   checks in `verify:grants` (43 total).
+
+   Everything above read `pg_tables`, which does not list views, so the nine
+   that exist were outside every assertion — including the five `ml.v_*`
+   consent-filtered projections that *"`steamkid_runtime` cannot write to `ml`"*
+   was written to protect. An auto-updatable view is checked against its
+   **owner's** rights on the base table, so a write granted there reaches
+   `app.learner` with the owner's authority. The tenth check asserts that no
+   `SECURITY DEFINER` function is executable by the runtime role, which is the
+   property that keeps section 4's ownership argument true once the cutover
+   moves every function to `steamkid_migrate`.
+
+   Both new check kinds were made to fail against the live database — granting
+   `INSERT` on `ml.v_consented_learner`, and creating one `SECURITY DEFINER`
+   function:
+
+   ```
+   FAIL  steamkid_runtime cannot write to any view in ml — WRITABLE: v_consented_learner — an auto-updatable view writes as its owner
+   FAIL  no SECURITY DEFINER function is executable by steamkid_runtime — ESCALATION: app.__probe_secdef runs as steamkid_app
+   ```
+
+   `relacl` was captured before and after and restored byte for byte; the run
+   returned to 43/43, exit 0.
+8. `prisma migrate deploy` applies all four migrations unedited as
    `steamkid_migrate`, and `/api/health` reports `database: true` —
    [PRO-68](/PRO/issues/PRO-68), Backend, once the new bindings are live.
 

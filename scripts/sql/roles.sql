@@ -212,7 +212,17 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public._prisma_migrations TO steamkid_mi
 --
 -- Cutover, in this order, once both new bindings are live. Run as `postgres`:
 -- REASSIGN needs membership in both the source and target roles, which neither
--- steamkid_app nor steamkid_migrate has over the other.
+-- steamkid_app nor steamkid_migrate has over the other. `postgres` does, and
+-- that was checked rather than assumed — pg_auth_members, 2026-09-23, ADMIN on
+-- steamkid_app, steamkid_migrate and steamkid_runtime. `postgres` is not a
+-- superuser on Supabase (only supabase_admin is), so this membership is the
+-- whole reason the sequence below is runnable at all:
+--
+--   select r.rolname as member, g.rolname as granted, m.admin_option
+--     from pg_auth_members m
+--     join pg_roles r on r.oid = m.member
+--     join pg_roles g on g.oid = m.roleid
+--    where g.rolname like 'steamkid%';
 --
 -- Section 4c changes what this sequence has to guarantee. The approved plan had
 -- Backend switch credentials (its step 2) before REASSIGN (its step 3), which
