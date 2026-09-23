@@ -179,7 +179,7 @@ describe("checkLeakedCredentialsRevoked", () => {
   it("refuses to accept a 401 earned by some other credential", async () => {
     const finding = await checkLeakedCredentialsRevoked({
       baseUrl: BASE_URL,
-      revoked: { publicKey: "pk-lf-not-the-leaked-one", secretKey: "sk-lf-not-the-leaked-one" },
+      revoked: { publicKey: "pk-lf-other-fixture", secretKey: "sk-lf-other-fixture" },
       control: CONTROL_PAIR,
       expected,
       fetchImpl: instance({ revoked: 401, control: 200 }),
