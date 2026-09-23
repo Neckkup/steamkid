@@ -12,6 +12,14 @@ import { env } from "@/lib/env";
  * answers 404 instead. Local and preview still render, which is where the
  * screens are reviewed.
  *
+ * This is no longer the only enforcement point, and no longer the outermost
+ * one: `src/proxy.ts` 404s the whole `/teacher` subtree on that tier before
+ * anything renders, which is what makes the production guard answer a real 404
+ * rather than a 200 carrying a "not found" body (PRO-99,
+ * `docs/adr/0006-teacher-route-status-codes.md`). Keep this call in every
+ * teacher page anyway — proxy coverage follows a matcher, and a Server Function
+ * reached on a path the matcher stops covering would otherwise run unguarded.
+ *
  * Delete this the day a teacher session exists — and scope the roster query to
  * that teacher's class in the same change.
  */
