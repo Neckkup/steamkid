@@ -19,15 +19,31 @@ the host in `DATABASE_URL` or `DIRECT_URL`, and no migration is ever run against
 Because the runner has no IPv6 route (measured below), the two connection strings
 are not the ones Supabase shows first in its dashboard:
 
-| Variable | Endpoint | Port | Mode |
-| --- | --- | --- | --- |
-| `DATABASE_URL` | `aws-0-ap-southeast-1.pooler.supabase.com` | 6543 | transaction, append `?pgbouncer=true&connection_limit=1` |
-| `DIRECT_URL` | `aws-0-ap-southeast-1.pooler.supabase.com` | 5432 | session — this is what `prisma migrate deploy` uses |
+| Variable | Endpoint | Port | Mode | Login role |
+| --- | --- | --- | --- | --- |
+| `DATABASE_URL` | `aws-0-ap-southeast-1.pooler.supabase.com` | 6543 | transaction, append `&pgbouncer=true&connection_limit=1` | `steamkid_runtime.<project-ref>` |
+| `DIRECT_URL` | `aws-0-ap-southeast-1.pooler.supabase.com` | 5432 | session — this is what `prisma migrate deploy` uses | `steamkid_migrate.<project-ref>` |
 
-Both carry `sslmode=require`. The login role is **`steamkid_app.<project-ref>`** — see
-"The role" below. The `aws-0` prefix is measured, not guessed: `aws-1-ap-southeast-1`
-resolves and accepts TCP but answers `tenant/user postgres.<ref> not found`, so a
-reachability test alone does not tell you which pooler is yours.
+**Two roles, not one** — see "The roles" below. The `aws-0` prefix is measured, not
+guessed: `aws-1-ap-southeast-1` resolves and accepts TCP but answers
+`tenant/user postgres.<ref> not found`, so a reachability test alone does not tell
+you which pooler is yours.
+
+Both carry **`uselibpqcompat=true&sslmode=require`**, and the first half of that is
+load-bearing. `pg` 8.23 — which Prisma reaches the database through, via
+`@prisma/adapter-pg` — changed `sslmode=require` to mean `verify-full`. Supabase's
+pooler presents a chain the runner does not trust, so a bare `sslmode=require`
+now fails with `self-signed certificate in certificate chain`: an error that reads
+like a networking fault and is a client-library default change. `uselibpqcompat=true`
+restores libpq's meaning — encrypt, do not verify the chain.
+
+That is the correct string for a database holding synthetic and CI data, and it is
+**not** the end state. Verifying the chain needs Supabase's CA pinned via
+`sslrootcert`, which is a real task rather than a flag, and it belongs with the other
+work at the real-child-data gate ([PRO-16](/PRO/issues/PRO-16)): an unverified chain
+means a party who can intercept the connection can read it. Recorded here so the
+`uselibpqcompat` flag is never mistaken for a decision that TLS verification does not
+matter.
 
 **`db.<project-ref>.supabase.co:5432` must not be used.** That is the "direct
 connection" the dashboard offers by default, and on the free tier it resolves to
@@ -42,34 +58,74 @@ Auth, Storage, Realtime, Edge Functions, PostgREST, or `@supabase/supabase-js`.
 This ADR does not touch Langfuse. Self-hosting traces (ADR 0002) rests on a
 different argument about a different dataset and is decided separately in PRO-69.
 
-## The role
+## The roles
 
 Provisioned 2026-09-23, project ref `abujfqhsddndtntdahxz`, PostgreSQL 17.6,
-`ap-southeast-1`.
+`ap-southeast-1`. Split into two roles the same day by
+[PRO-103](/PRO/issues/PRO-103).
 
 **The connection strings do not use the `postgres` superuser-equivalent account.**
 The Supabase connection Paperclip installed grants SQL execution but deliberately
 never exposes a libpq password, so rather than ask the founder to paste the
-project's `postgres` password into a secret, `postgres` was used once to mint a
-dedicated login role:
+project's `postgres` password into a secret, `postgres` was used to mint dedicated
+login roles. The founder's `postgres` password is never handled by an agent and
+never enters a Paperclip secret.
 
-| Property | `steamkid_app` |
-| --- | --- |
-| `rolsuper` / `rolcreaterole` / `rolcreatedb` | false / false / false |
-| `CONNECT` on database `postgres` | granted |
-| `CREATE` on database `postgres` | granted — migration 1 runs `CREATE SCHEMA` |
-| `CREATE` on schema `public` | granted |
+Neither role may create roles or databases. The grants are:
 
-This is strictly better than the alternative it replaces: the credential we hand out
-is one we generated, can rotate without a founder session, and that cannot create
-roles or databases. The founder's `postgres` password is never handled by an agent
-and never enters a Paperclip secret.
+| | `steamkid_migrate` | `steamkid_runtime` |
+| --- | --- | --- |
+| Carried by | `DIRECT_URL` (5432, session) | `DATABASE_URL` (6543, transaction) |
+| Used by | `prisma migrate deploy`, and nothing else | the application, and nothing else |
+| `rolsuper` / `rolcreaterole` / `rolcreatedb` | false / false / false | false / false / false |
+| `CONNECT` on database `postgres` | granted | granted |
+| `CREATE` on database `postgres` | **granted** | **revoked** |
+| `identity`, `app`, `events`, `ml` | owns them; `USAGE, CREATE` | `USAGE` only |
+| `CREATE` on schema `public` | granted (`_prisma_migrations`) | revoked |
+| Tables in `identity`, `app`, `events` | owner | `SELECT, INSERT, UPDATE, DELETE` |
+| Tables in `ml` | owner | `SELECT` only |
 
-**Known limit, deliberately accepted for now:** one role does both DDL and runtime
-DML. The correct end state is a migrator role with DDL and a runtime role with DML
-only. That split is not free to retrofit, but it buys nothing while this project is
-restricted to synthetic and CI data, and it is **mandatory before the PRO-16 gate
-opens to real child data** — recorded there, not left implied.
+The whole point is the fourth row. `CREATE` on the *database* is what makes "no DDL"
+either true or decorative: a role that can `CREATE SCHEMA` can build itself a schema
+it owns and do whatever it likes inside it, so revoking `CREATE TABLE` while leaving
+`CREATE SCHEMA` would have been a comfortable-sounding no-op.
+
+Runtime keeps `UPDATE` and `DELETE` because consent withdrawal and skill state
+legitimately need them. History is protected one layer up, by the append-only
+triggers in the migrations — and the reason runtime cannot simply remove those
+triggers is that `DROP TRIGGER` and `ALTER TABLE ... DISABLE TRIGGER` both require
+table *ownership*, which runtime does not have and cannot grant itself.
+
+### Two things that had to happen before migration 1, not after
+
+**The four schemas are created by `scripts/sql/roles.sql`, not by migration 1.**
+`ALTER DEFAULT PRIVILEGES ... IN SCHEMA` needs the schema to exist, and default
+privileges only apply to objects created *afterwards*. Setting them after the first
+migration would leave that migration's tables with no runtime grants at all, and the
+hand-written `GRANT`s papering over it would then have to be repeated — correctly —
+in every migration anyone ever writes again. The failure mode when someone forgets
+is a production permission error, not a test failure. Migration 1's
+`CREATE SCHEMA IF NOT EXISTS` short-circuits; its `COMMENT ON SCHEMA` still works
+because the migrator owns the schemas.
+
+**The split itself happened before any migration ran, which made it nearly free.**
+This ADR originally recorded the single-role setup as a known limit to be fixed
+"before the PRO-16 gate", and [PRO-103](/PRO/issues/PRO-103) was sequenced after
+[PRO-68](/PRO/issues/PRO-68) for that reason. PRO-68 then sat blocked on a secret
+binding that never applied, so the database was still empty when PRO-103 was picked
+up — no objects to `REASSIGN OWNED`, no grants to backfill, and the default
+privileges could go in ahead of the first table rather than being retrofitted around
+it. The sequencing was reversed on that basis. *Irreversible-first: the cost of this
+change was lowest on the day the database was empty, and only ever rises.*
+
+### `steamkid_app` is retired
+
+The combined DDL+DML role this ADR first shipped. It has been stripped of `CREATE`
+on both the database and `public`, so it can no longer run a migration, but it is
+**not yet dropped** — keeping it until the two new bindings are live means the
+switch stays reversible. The drop is three statements at the bottom of
+`scripts/sql/roles.sql`. Nothing ever held its credential: every binding proposal
+for it was auto-rejected, which is the same fault that blocked PRO-68.
 
 ### `citext` lives in `public`, on purpose
 
@@ -186,6 +242,8 @@ the database wait on an unrelated human decision for no gain.
 | Supabase as the managed host | **Low, and lowest it will ever be.** Zero rows exist today. Later: `pg_dump` → `pg_restore`, swap two env vars, redeploy. ADR 0003's re-decision trigger is unchanged. |
 | The pooler endpoints | **Very low.** Two env vars. If the project ever gets IPv6 egress or the IPv4 add-on, the direct string becomes usable; nothing in the code changes either way. |
 | Retiring `supabase.homekup.com` | **Low.** Nothing points at it. If the founder overrules, the fallback is the Cloudflare Tunnel option above, at the cost of a second access path for production. |
+| Splitting migrator from runtime | **Paid, and it was near-zero.** Done while the database held no objects: nothing to `REASSIGN OWNED`, no grants to backfill. The same change after the first migration costs an ownership transfer plus a grant sweep, and after real child data it costs that during a maintenance window. Reverting is one `GRANT CREATE` and a secret rotation. |
+| `uselibpqcompat=true` instead of a pinned CA | **Low, and deliberately deferred.** Adding `sslrootcert` is a flag plus shipping Supabase's CA. It must be paid before real child data; until then the database holds synthetic and CI rows only. |
 | The hard exclusions from ADR 0003 | **High if violated.** Unchanged, and still the line to defend in review. |
 
 ## What this deliberately does not decide
@@ -229,6 +287,37 @@ The check that proves this ADR, in order:
 
    The probe ran in a throwaway `_cto_probe` schema and dropped it; the database is
    still empty, so PRO-68 starts from zero.
-4. `prisma migrate deploy` applies all four migrations unedited, and `/api/health`
-   reports `database: true` — [PRO-68](/PRO/issues/PRO-68), Backend, once the
-   secret bindings are approved.
+4. The role split is real and not merely documented — **done 2026-09-23**,
+   [PRO-103](/PRO/issues/PRO-103). `npm run verify:roles`
+   (`scripts/verify-db-roles.ts`) connects as both roles against the live database
+   and asserts 13 checks. It is written to fail, and it did: the first run reported
+   two genuine failures, because each check ran in its own rolled-back transaction,
+   so `UPDATE` met an empty table and a `FOR EACH ROW` trigger never fired —
+   success over zero rows, which reads exactly like a missing guard. The migrator
+   now commits a fixture row first, and the script refuses to run if that row is
+   not visible to the runtime role.
+
+   | The runtime role tries | Result |
+   | --- | --- |
+   | `INSERT`, `SELECT` on a migrator-created table | allowed — the positive control |
+   | `UPDATE`, `DELETE` | refused by the append-only trigger, *not* by privileges |
+   | `DROP TABLE`, `ALTER TABLE ... ADD COLUMN` | `42501` |
+   | `DROP TRIGGER`, `ALTER TABLE ... DISABLE TRIGGER` | `42501` |
+   | `CREATE TABLE` in `events` and in `identity` | `42501` |
+   | `DROP SCHEMA events`, `CREATE SCHEMA` | `42501` |
+   | `TRUNCATE` | `42501` |
+
+   Three details are what make this evidence rather than ceremony. A privilege
+   denial only counts as `42501`, so a typo that raised `undefined_table` cannot be
+   read as a refusal. The two trigger checks *fail* if they get `42501`, because
+   being stopped by privileges would mean the trigger was never reached and the
+   append-only guarantee went untested. And the fixture lives in `events` rather
+   than a scratch schema, so it exercises the real `ALTER DEFAULT PRIVILEGES` path
+   — a probe schema would pass while the actual grants were broken.
+5. `prisma migrate deploy` applies all four migrations unedited as
+   `steamkid_migrate`, and `/api/health` reports `database: true` —
+   [PRO-68](/PRO/issues/PRO-68), Backend, once the new bindings are live. The
+   statements that migration 1 opens with were dry-run as the migrator on
+   2026-09-23: `CREATE EXTENSION IF NOT EXISTS citext`/`pgcrypto` short-circuit,
+   `CREATE SCHEMA IF NOT EXISTS` and `COMMENT ON SCHEMA` succeed, and a table can
+   be created in `public` for `_prisma_migrations`.
