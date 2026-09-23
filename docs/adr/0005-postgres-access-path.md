@@ -21,8 +21,13 @@ are not the ones Supabase shows first in its dashboard:
 
 | Variable | Endpoint | Port | Mode |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | `aws-<n>-ap-southeast-1.pooler.supabase.com` | 6543 | transaction, append `?pgbouncer=true&connection_limit=1` |
-| `DIRECT_URL` | `aws-<n>-ap-southeast-1.pooler.supabase.com` | 5432 | session — this is what `prisma migrate deploy` uses |
+| `DATABASE_URL` | `aws-0-ap-southeast-1.pooler.supabase.com` | 6543 | transaction, append `?pgbouncer=true&connection_limit=1` |
+| `DIRECT_URL` | `aws-0-ap-southeast-1.pooler.supabase.com` | 5432 | session — this is what `prisma migrate deploy` uses |
+
+Both carry `sslmode=require`. The login role is **`steamkid_app.<project-ref>`** — see
+"The role" below. The `aws-0` prefix is measured, not guessed: `aws-1-ap-southeast-1`
+resolves and accepts TCP but answers `tenant/user postgres.<ref> not found`, so a
+reachability test alone does not tell you which pooler is yours.
 
 **`db.<project-ref>.supabase.co:5432` must not be used.** That is the "direct
 connection" the dashboard offers by default, and on the free tier it resolves to
@@ -36,6 +41,51 @@ Auth, Storage, Realtime, Edge Functions, PostgREST, or `@supabase/supabase-js`.
 
 This ADR does not touch Langfuse. Self-hosting traces (ADR 0002) rests on a
 different argument about a different dataset and is decided separately in PRO-69.
+
+## The role
+
+Provisioned 2026-09-23, project ref `abujfqhsddndtntdahxz`, PostgreSQL 17.6,
+`ap-southeast-1`.
+
+**The connection strings do not use the `postgres` superuser-equivalent account.**
+The Supabase connection Paperclip installed grants SQL execution but deliberately
+never exposes a libpq password, so rather than ask the founder to paste the
+project's `postgres` password into a secret, `postgres` was used once to mint a
+dedicated login role:
+
+| Property | `steamkid_app` |
+| --- | --- |
+| `rolsuper` / `rolcreaterole` / `rolcreatedb` | false / false / false |
+| `CONNECT` on database `postgres` | granted |
+| `CREATE` on database `postgres` | granted — migration 1 runs `CREATE SCHEMA` |
+| `CREATE` on schema `public` | granted |
+
+This is strictly better than the alternative it replaces: the credential we hand out
+is one we generated, can rotate without a founder session, and that cannot create
+roles or databases. The founder's `postgres` password is never handled by an agent
+and never enters a Paperclip secret.
+
+**Known limit, deliberately accepted for now:** one role does both DDL and runtime
+DML. The correct end state is a migrator role with DDL and a runtime role with DML
+only. That split is not free to retrofit, but it buys nothing while this project is
+restricted to synthetic and CI data, and it is **mandatory before the PRO-16 gate
+opens to real child data** — recorded there, not left implied.
+
+### `citext` lives in `public`, on purpose
+
+Migration 1 declares `email citext` unqualified. `citext` was absent from the fresh
+project; `pgcrypto` was already present in `extensions`, so its `IF NOT EXISTS` is a
+no-op. Installing `citext` into `extensions` and adding it to the role's
+`search_path` was tried first **and measured to fail**: `ALTER ROLE ... SET
+search_path` does not reliably reach a session through Supavisor — a probe through
+the pooler still reported `"$user", public` and the column failed with
+`type "citext" does not exist`.
+
+So `citext` is installed in `public`, where the default `search_path` already looks.
+This costs a Supabase `extension_in_public` advisory and buys a migration that does
+not depend on pooler session state. An intermittent search_path failure behind a
+transaction pooler is precisely the bug that costs days to find; the lint warning
+costs nothing on a CI-only database.
 
 ## The facts this rests on
 
@@ -160,6 +210,25 @@ The check that proves this ADR, in order:
    was written down.
 2. Founder accepts the Supabase connection card; project created in
    `ap-southeast-1`; `DATABASE_URL`/`DIRECT_URL` issued as Paperclip secrets in the
-   shape tabled above. They never enter the repo.
-3. `prisma migrate deploy` applies all three migrations unedited, and
-   `/api/health` reports `database: true` — [PRO-68](/PRO/issues/PRO-68).
+   shape tabled above. They never enter the repo. — **done 2026-09-23.** Card
+   accepted; project `abujfqhsddndtntdahxz` live on PostgreSQL 17.6; both URLs
+   raised as secret proposals plus bindings to Backend and CTO, pending approval.
+3. The credential is sufficient for the migrations we actually have — **done
+   2026-09-23**, and it was not sufficient on the first attempt. Verified as
+   `steamkid_app` through the pooler:
+
+   | Check | Result |
+   | --- | --- |
+   | Authenticate on 5432 and 6543 | `current_user = steamkid_app` on both |
+   | `prisma migrate status` | reads state, reports the 4 migrations pending |
+   | `CREATE EXTENSION IF NOT EXISTS citext` / `pgcrypto` | both short-circuit |
+   | `CREATE SCHEMA` | ok — needed the database-level `CREATE` grant |
+   | `email citext` unqualified + case-insensitive `UNIQUE` | ok, duplicate rejected `23505` |
+   | `CREATE VIEW`, `CREATE FUNCTION`, `CREATE TRIGGER` | ok |
+   | `db.<project-ref>.supabase.co:5432` | `ENETUNREACH` — the excluded row, now measured |
+
+   The probe ran in a throwaway `_cto_probe` schema and dropped it; the database is
+   still empty, so PRO-68 starts from zero.
+4. `prisma migrate deploy` applies all four migrations unedited, and `/api/health`
+   reports `database: true` — [PRO-68](/PRO/issues/PRO-68), Backend, once the
+   secret bindings are approved.
