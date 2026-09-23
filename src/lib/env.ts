@@ -100,6 +100,15 @@ const schema = z.object({
   SENTRY_ORG: blankAsUndefined(z.string().min(1)),
   SENTRY_PROJECT: blankAsUndefined(z.string().min(1)),
   SENTRY_AUTH_TOKEN: blankAsUndefined(z.string().min(1)),
+
+  /**
+   * Shared secret for internal cron endpoints (`/api/internal/*`).
+   *
+   * Set this in production. Internal endpoints check `Authorization: Bearer
+   * <token>` against this value. In `APP_ENV=local` the check is skipped so
+   * local dev can call the endpoints without setup.
+   */
+  INTERNAL_CRON_SECRET: blankAsUndefined(z.string().min(16)),
 });
 
 export type Env = z.infer<typeof schema>;

@@ -30,6 +30,7 @@ import type { EventEnvelope } from "./envelope";
 import type { DeadLetterRecord } from "./ingest";
 import type { EventSink, IngestContext } from "./sink";
 import { getEventDefinition } from "./registry";
+import { isScorableSession, reconstructSession } from "./session-window";
 
 /** Scope an event needs before it may be stored, per the registry. */
 const DEFAULT_CONSENT_SCOPE = "behaviour_events";
@@ -129,11 +130,27 @@ export class PostgresEventSink implements EventSink {
       params,
     );
 
-    return {
+    const outcome = {
       inserted: rows.length,
       duplicate: writable.length - rows.length,
       withheld,
     };
+
+    // Reconcile every session that received at least one new event. This updates
+    // events.session with server-computed active_ms, scorable, etc. — the values
+    // ml.v_behaviour_sequences filters on. Duplicates (rows.length === 0) do not
+    // need reconciliation because nothing changed.
+    if (rows.length > 0) {
+      const insertedIds = new Set(rows.map((r) => r.event_id));
+      const affectedSessionIds = new Set(
+        writable
+          .filter(({ envelope }) => insertedIds.has(envelope.event_id))
+          .map(({ envelope }) => envelope.session_id),
+      );
+      await Promise.all([...affectedSessionIds].map((id) => this.reconcileSession(id)));
+    }
+
+    return outcome;
   }
 
   /**
@@ -181,6 +198,89 @@ export class PostgresEventSink implements EventSink {
       [learnerId],
     );
     return new Set(rows.map((row) => row.scope));
+  }
+
+  /**
+   * Recompute one session's aggregate columns from its stored events.
+   *
+   * `events.session` is a computed summary, not history. This may be called any
+   * number of times for the same session — the result converges, so a retry is
+   * a no-op. Called automatically after each successful insert; also called by
+   * `sweepIdleSessions` to close sessions the client never explicitly ended.
+   *
+   * `asOf` drives the idle-close rule: if the session is still open and has had
+   * no activity for `IDLE_CLOSE_MS`, it is back-dated to the last event. Omit it
+   * to leave a still-live session open.
+   */
+  async reconcileSession(sessionId: string, asOf?: Date): Promise<void> {
+    const { rows } = await this.sql.query<{
+      event_name: string;
+      client_seq: string;
+      occurred_at: Date;
+      received_at: Date;
+      payload: Record<string, unknown> | null;
+    }>(
+      `SELECT event_name, client_seq, occurred_at, received_at, payload
+       FROM events.behavior_event WHERE session_id = $1::uuid ORDER BY client_seq`,
+      [sessionId],
+    );
+
+    const window = reconstructSession(
+      rows.map((row) => ({
+        event_name: row.event_name,
+        client_seq: Number(row.client_seq),
+        occurred_at: new Date(row.occurred_at).getTime(),
+        received_at: new Date(row.received_at).getTime(),
+        payload: row.payload,
+      })),
+      asOf?.getTime(),
+    );
+    if (!window) return;
+
+    await this.sql.query(
+      `UPDATE events.session
+       SET ended_at = $2::timestamptz, duration_ms = $3, active_ms = $4, discarded_ms = $5,
+           client_active_ms = $6, end_reason = $7, scorable = $8, event_count = $9,
+           heartbeat_count = $10, anomalies = $11::jsonb, reconstructed_at = now()
+       WHERE id = $1::uuid`,
+      [
+        sessionId,
+        window.endedAt === null ? null : new Date(window.endedAt).toISOString(),
+        window.durationMs,
+        window.activeMs,
+        window.discardedMs,
+        window.clientActiveMs,
+        window.endReason,
+        isScorableSession(window),
+        window.eventCount,
+        window.heartbeatCount,
+        JSON.stringify(window.anomalies),
+      ],
+    );
+  }
+
+  /**
+   * Close sessions the client never ended — tablets that ran out of battery,
+   * tabs closed without unload, network drops mid-session.
+   *
+   * Finds sessions still marked `open` and reconciles them with the current
+   * wall-clock time, which triggers the idle-close rule in `reconstructSession`
+   * for sessions silent for more than `IDLE_CLOSE_MS` (30 minutes).
+   *
+   * Returns the number of sessions processed. Meant to be called from a cron
+   * endpoint on a 5–10 minute cadence — frequent enough that the tail lag
+   * never grows beyond one cadence interval beyond `IDLE_CLOSE_MS`.
+   */
+  async sweepIdleSessions(asOf: Date, limit = 100): Promise<number> {
+    const { rows } = await this.sql.query<{ id: string }>(
+      `SELECT id FROM events.session WHERE end_reason = 'open' ORDER BY started_at LIMIT $1`,
+      [limit],
+    );
+
+    if (rows.length === 0) return 0;
+
+    await Promise.all(rows.map((row) => this.reconcileSession(row.id, asOf)));
+    return rows.length;
   }
 
   /**

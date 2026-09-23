@@ -266,6 +266,122 @@ describe("withdrawing consent", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Session reconciliation — PRO-106
+// The session row must be populated by the sink, not left at its insert-time
+// defaults. ml.v_behaviour_sequences filters on session.scorable, so a session
+// that never gets reconciled is invisible to the training export forever.
+//
+// These tests use their own learner seeded in beforeAll so they are isolated
+// from the consent-withdrawal that runs in an earlier describe block.
+// ---------------------------------------------------------------------------
+
+describe("session reconciliation", () => {
+  // Fresh learner with all consents intact for this test group.
+  let reconcilingLearner: SeededLearner;
+  let reconcilingIds: JourneyIds;
+  let reconcilingJourney: typeof journey;
+
+  const T1 = T0 + 2_000_000;
+
+  beforeAll(async () => {
+    reconcilingLearner = await seedLearner(db, {
+      email: "guardian-reconcile@example.test",
+      scopes: ALL_SCOPES,
+    });
+    reconcilingIds = journeyIds(T1);
+    reconcilingJourney = buildLearnerJourney(T1, reconcilingIds);
+    await sink.acceptWithOutcome(
+      { learnerId: reconcilingLearner.learnerId, receivedAt: new Date(T1 + 600_000).toISOString() },
+      reconcilingJourney,
+    );
+  });
+
+  it("populates the session row after ingesting a complete journey", async () => {
+    const { rows } = await db.query<{
+      end_reason: string;
+      ended_at: string | null;
+      duration_ms: string;
+      active_ms: string;
+      scorable: boolean;
+      event_count: string;
+      heartbeat_count: string;
+      reconstructed_at: string | null;
+    }>(
+      `SELECT end_reason, ended_at, duration_ms, active_ms, scorable,
+              event_count, heartbeat_count, reconstructed_at
+       FROM events.session WHERE id = $1::uuid`,
+      [reconcilingIds.sessionId],
+    );
+
+    const session = rows[0];
+    expect(session).toBeDefined();
+    expect(session?.end_reason).toBe("explicit_logout");
+    expect(session?.ended_at).not.toBeNull();
+    expect(Number(session?.duration_ms)).toBeGreaterThan(0);
+    expect(Number(session?.active_ms)).toBeGreaterThan(0);
+    expect(session?.scorable).toBe(true);
+    expect(Number(session?.event_count)).toBe(reconcilingJourney.length);
+    expect(Number(session?.heartbeat_count)).toBeGreaterThan(0);
+    expect(session?.reconstructed_at).not.toBeNull();
+  });
+
+  it("makes the session visible in ml.v_behaviour_sequences", async () => {
+    const { rows } = await db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM ml.v_behaviour_sequences
+       WHERE session_id = $1::uuid`,
+      [reconcilingIds.sessionId],
+    );
+    expect(Number(rows[0]?.n)).toBeGreaterThan(0);
+  });
+
+  it("sweepIdleSessions closes a session that timed out without session.ended", async () => {
+    const T2 = T0 + 4_000_000;
+    const silent = await seedLearner(db, {
+      email: "guardian-silent@example.test",
+      scopes: ALL_SCOPES,
+    });
+    const silentIds = journeyIds(T2);
+
+    // Truncated journey: no session.ended event.
+    const silentJourney = buildLearnerJourney(T2, silentIds).filter(
+      (e) => e.event_name !== "session.ended",
+    );
+
+    await sink.acceptWithOutcome(
+      { learnerId: silent.learnerId, receivedAt: new Date(T2 + 600_000).toISOString() },
+      silentJourney,
+    );
+
+    // Before sweep: session is still open (no session.ended was in the batch).
+    const { rows: before } = await db.query<{ end_reason: string }>(
+      `SELECT end_reason FROM events.session WHERE id = $1::uuid`,
+      [silentIds.sessionId],
+    );
+    expect(before[0]?.end_reason).toBe("open");
+
+    // asOf must exceed lastEventAt + IDLE_CLOSE_MS (30 min).
+    // Last event in the truncated journey is the last heartbeat at
+    // T2 + (JOURNEY_DURATION_MS - HEARTBEAT_INTERVAL_MS) = T2 + 305_000.
+    // So asOf = T2 + 305_000 + 31 * 60_000 = T2 + 2_165_000.
+    const asOf = new Date(T2 + 305_000 + 31 * 60_000);
+    const swept = await sink.sweepIdleSessions(asOf);
+
+    expect(swept).toBeGreaterThan(0);
+
+    const { rows: after } = await db.query<{
+      end_reason: string;
+      reconstructed_at: string | null;
+    }>(
+      `SELECT end_reason, reconstructed_at
+       FROM events.session WHERE id = $1::uuid`,
+      [silentIds.sessionId],
+    );
+    expect(after[0]?.end_reason).toBe("idle_close");
+    expect(after[0]?.reconstructed_at).not.toBeNull();
+  });
+});
+
 async function countEvents(learnerId: string): Promise<number> {
   const { rows } = await db.query<{ n: string }>(
     `SELECT count(*)::text AS n FROM events.behavior_event WHERE learner_id = $1::uuid`,
