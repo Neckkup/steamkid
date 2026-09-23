@@ -372,7 +372,8 @@ role would therefore write to `app.learner` with the owner's authority — throu
 the consent-filtered projection, past a read-only control that every other check
 in the file reported as intact.
 
-Both properties hold today (43/43 when written, 44/44 now) and both were made to fail against the live
+Both properties hold (43/43 when written; the suite stands at 46/46 as of
+2026-09-23, re-run from the CTO runner after the drop) and both were made to fail against the live
 database first: granting `INSERT` on `ml.v_consented_learner` and creating one
 `SECURITY DEFINER` function produced
 
@@ -514,6 +515,51 @@ it keeps working after the bindings are eventually removed. `connection-env.test
 covers the pooler's `role.project_ref` username form, the bare role name, a
 `role_with_a_longer_name` that merely starts with it, and a libpq keyword string
 the parser cannot read (where it declines to guess and lets the server decide).
+
+#### What the stale bindings actually say now, measured after the drop
+
+The section above predicted "a SCRAM failure against a vanished role". Measured
+2026-09-23 from the CTO runner, connecting with the two still-injected variables
+and bypassing `assertUsableRole`, the prediction is half right and the half it
+gets wrong is the expensive half:
+
+| Still-injected variable | Port | Error the server returns |
+| --- | --- | --- |
+| `DIRECT_URL` | 5432 | `28P01 password authentication failed for user "steamkid_app"` |
+| `DATABASE_URL` | 6543 | `XX000 (EAUTHQUERY) user not found in the database` |
+
+Only the session port gives the expected SCRAM failure. Supavisor answers with
+`user not found in the database`, which reads like a wrong project ref or a
+tenancy misconfiguration — the same family as the `tenant/user not found` that
+`aws-1-…` returns for a correct credential aimed at the wrong region. Anyone who
+hits it while also holding a genuinely mis-copied host has two plausible causes
+for one message.
+
+A third layer sits in front of both: neither stale URL carries
+`uselibpqcompat=true`, so `pg` 8.23 applies `verify-full` to their `sslmode=require`
+and fails at TLS with `self-signed certificate in certificate chain` **before**
+either error above is reachable. The probe appended the flag to get past it; a
+caller who does not gets the TLS message and never sees the auth one.
+
+So the leftover injection has three distinct failure faces depending on which
+variable and which client library, and exactly one of them names the real cause.
+That is the case for `assertUsableRole` firing before the socket opens, restated
+as evidence rather than as a prediction.
+
+The bindings themselves remain, and still cannot be removed by any agent — the
+403 above was re-confirmed against the agent API surface, which offers create,
+list and withdraw of *proposals* and no deletion of an applied binding. They are
+inert: both are shadowed by `MIGRATE_DATABASE_URL` / `RUNTIME_DATABASE_URL`,
+refused by `assertUsableRole` if anything reaches for them, and pointed at a role
+`verify:grants` asserts is gone. Deleting them is board-side tidying, not a
+dependency of anything.
+
+Deliberately **not** done: re-pointing `steamkid/postgres/database-url` and
+`steamkid/postgres/direct-url` at the split roles to make the occupied config
+paths correct again. It would work, and it would put one credential in two
+secrets — so the next password rotation silently leaves a live-looking dead copy
+behind, which is the failure this whole section is about, reintroduced for the
+sake of a conventional variable name.
 
 The general lesson, which is not about Postgres: **a step that only improves a
 failure message is not a dependency.** When it is the last step of a ticket and
