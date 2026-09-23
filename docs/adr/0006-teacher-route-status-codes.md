@@ -72,6 +72,18 @@ The production row is now a true statement about a privacy control. Any check
 that asserts 404 on local or preview is asserting something this ADR says we
 deliberately do not provide, and will fail.
 
+That table is executable — `scripts/pro99-check.ts` is the same contract as a
+script, so a monitoring author copies an assertion rather than re-deriving one
+from prose:
+
+```
+BASE_URL=https://<deployment> TIER=production npx tsx scripts/pro99-check.ts
+BASE_URL=http://localhost:3000 TIER=local      npx tsx scripts/pro99-check.ts
+```
+
+It checks `/learn` first on both tiers. Without that control, "everything 404s"
+reads as a healthy guard when the site is simply down.
+
 ### The second reason, which outgrew the status code
 
 The in-page guard is **opt-in**: four pages each remember to call
