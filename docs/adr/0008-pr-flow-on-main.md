@@ -442,6 +442,29 @@ This is the same rule the rest of this ADR applies to GitHub's own claims — `-
 success, a settings page asserting a rule — extended to the one signal that felt trustworthy
 precisely because a human produced it.
 
+### Waiting on a person is not the same shape as waiting on CI
+
+Q1 chose the issue monitor as the backstop for a pull request whose CI might go red. That answer
+was scoped to CI, and this ticket then misapplied it to a founder click and paid for it: **eight
+monitor fires across eight heartbeats, every one reading the same `enforcement_level=off`.** The
+monitor was working correctly. It was pointed at the wrong kind of thing.
+
+The two waits differ in where the knowledge lives:
+
+| Waiting on | Who knows it finished | Right wake path |
+| --- | --- | --- |
+| A CI run | GitHub, and only if you ask | issue monitor — a timer, because nothing will tell you |
+| A person | Paperclip, the moment they click | `request_confirmation` with `continuationPolicy: "wake_assignee"` |
+
+A timer aimed at a human is pure loss: it cannot make them faster, it reads an unchanged value, and
+it costs a heartbeat each time. The card costs one wake on the click and one on the decline. The
+same misread also produced the softer failure visible in this thread — each fire arrived with
+nothing to report, and the heartbeat filled the gap by restating the ask, so the founder got the
+same two paragraphs five times.
+
+So: **the monitor is for CI. The card is for people.** Do not arm both for the same wait, and do
+not re-ask in prose while a card is pending — the pending card already is the ask.
+
 ## Order of operations
 
 Steps 2 and 3 are one change and the order between them is load-bearing — see Q2.
