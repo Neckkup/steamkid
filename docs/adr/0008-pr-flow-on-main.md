@@ -549,7 +549,21 @@ BEHIND
 
 `BEHIND` is a distinct state from `BLOCKED` (failing or pending checks) and `CLEAN`. GitHub only
 reports it when "require branches to be up to date" is on, so seeing it is the read-back that the
-settings API refuses to give. The pull request became mergeable after `gh pr update-branch`.
+settings API refuses to give. A plain merge was refused in the same terms:
+
+```
+$ gh pr merge 24 --squash
+X Pull request Neckkup/steamkid#24 is not mergeable: the head branch is not up to date
+  with the base branch.
+```
+
+Updating the branch moved it `BEHIND` -> `BLOCKED`, i.e. waiting on checks rather than on freshness.
+**Use the API, not `gh pr update-branch`** — that subcommand does not exist in the `gh` build on
+these runners, and a missing subcommand is one more completion condition that fails open:
+
+```bash
+gh api -X PUT repos/Neckkup/steamkid/pulls/<n>/update-branch
+```
 
 ### Evidence 3 — the fifth command stopped failing open
 
