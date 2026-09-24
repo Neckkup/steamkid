@@ -373,3 +373,62 @@ and prevents nothing.
 
 `main-guard.yml` therefore stays for a second heartbeat, on the reasoning already given above: it is still
 the only thing recording a force push on a branch that is world-readable and unprotected.
+
+### Third read-back — PRO-121, measured 2026-09-24: `main` is protected, by the classic route
+
+The founder answered the second question card with "I granted the App the permission, try again" and
+"already did" for secret scanning and fork approval. Re-measured on a freshly issued installation token:
+
+| Check | Endpoint | Result | Change since the second read-back |
+| --- | --- | --- | --- |
+| `main` is protected | `GET /repos/Neckkup/steamkid/branches/main` | `"protected": true`, `protection.enabled: true` | **changed** — was `false` |
+| Any ruleset, at any enforcement level | `GET /repos/Neckkup/steamkid/rulesets?includes_parents=true` | `[]` | unchanged |
+| Rules applying to `main` | `GET /repos/Neckkup/steamkid/rules/branches/main` | `[]` | unchanged |
+| Agent can create a ruleset | `POST /repos/Neckkup/steamkid/rulesets` | `403`, `X-Accepted-GitHub-Permissions: administration=write` | unchanged |
+| Agent can read the classic rule | `GET /repos/Neckkup/steamkid/branches/main/protection` | `403`, `X-Accepted-GitHub-Permissions: administration=read` | unchanged |
+
+Two conclusions follow, and they point in opposite directions.
+
+**The protection is real, and it is the classic route.** `protected: true` with an empty `/rules/branches/main`
+is the exact signature the diagram above predicted for a classic branch protection rule. The gate named in
+the second read-back is met.
+
+**The `administration` permission was not in fact granted.** The caveat kept on the record last time —
+"a `403` could be a token issued before the grant" — is now spent. This token was minted after the
+founder's answer and still reads `403` on both the write and the read call, with GitHub naming the missing
+permission in the response header. The App does not hold `administration` at any level. This is worth
+stating plainly rather than leaving as an open loop: the founder set the protection by hand, which is a
+complete answer to Stage A, and the API route is simply closed to us.
+
+#### What `protected: true` does not tell us, and the test that does
+
+`GET /branches/main` returns a truncated protection object. It reports *that* the branch is protected, not
+*how*. The three settings Stage A actually depends on — force pushes restricted, deletions restricted, and
+admins unable to bypass — live behind `/branches/main/protection`, which answers `403`. So the read that
+closes the gate cannot close the mandatory bypass condition.
+
+Two of the three can be reasoned about without reading them:
+
+- **Deletions.** `main` is the repository's default branch, and GitHub refuses to delete a default branch
+  regardless of protection. This rule was never the load-bearing one here.
+- **Force pushes.** A classic rule created with no boxes ticked already restricts force pushes — "Allow
+  force pushes" is off by default. The likely state is therefore *restricted*.
+
+The third cannot. **"Do not allow bypassing the above settings" is off by default**, and every agent on
+this team pushes as `Neckkup`, the repository admin. If it was left off, the settings page is green and the
+rule stops nobody who actually pushes here. That is not a hypothetical failure mode; it is the only way
+force pushes reach `main` in practice, because nobody else has write access.
+
+Since it cannot be read, it is measured. The test is a force push, made safe by construction:
+
+1. Record the remote tip `X`. Commit this ADR section as `Y` and push it normally — a fast-forward, which
+   protection permits either way.
+2. Attempt `git push --force origin X:refs/heads/main`, a one-commit rewind of a commit we just created
+   ourselves and still hold locally.
+3. Rejected → admins cannot bypass, `main` is genuinely protected against the team, and `main-guard.yml`
+   is now surplus.
+   Accepted → `main` is restorable in one fast-forward push (`git push origin Y:refs/heads/main`), nothing
+   is lost, and we have just proved the rule is decorative and that `main-guard.yml` must stay.
+
+The only history at risk is one commit that exists in the local repository at the moment the test runs.
+The result is recorded below.
