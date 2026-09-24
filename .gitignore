@@ -52,3 +52,6 @@ next-env.d.ts
 # core dumps — a crashed PGlite worker drops one of these in the repo root,
 # and they run to over a gigabyte each
 core.*
+
+# throwaway local Postgres cluster (scripts/local-postgres.sh)
+/.local-postgres/
