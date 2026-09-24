@@ -319,3 +319,57 @@ Actions setting that would otherwise decide this reads `403` to our App (`/actio
 `npm ci` executes third-party install scripts — on a public repository a read-only token is the difference
 between a compromised dependency reading the repo and writing to it. `main-guard.yml` already declared
 `permissions: {}`; `ci.yml` had declared nothing.
+
+### Second read-back — PRO-121, measured 2026-09-24, after the founder reported the ruleset was set
+
+The founder answered the question card with "already set it, go read again". Re-measured; nothing had
+changed. `main` is still unprotected:
+
+| Check | Endpoint | Result |
+| --- | --- | --- |
+| Any ruleset on the repo, at any enforcement level | `GET /repos/Neckkup/steamkid/rulesets?includes_parents=true` | `[]` |
+| Rules applying to `main` | `GET /repos/Neckkup/steamkid/rules/branches/main` | `[]` |
+| `main` is protected | `GET /repos/Neckkup/steamkid/branches/main` | `"protected": false`, `protection.enabled: false` |
+| Agent can create the ruleset | `POST /repos/Neckkup/steamkid/rulesets` | `403 Resource not accessible by integration` |
+
+**Why `[]` is believed rather than treated as a permissions artefact.** Three independent endpoints agree,
+and two of them are readable by anyone with read access to a public repository, so a missing App permission
+cannot be producing a false empty list. `protected: false` is a fourth signal computed from effective
+protection, which includes rulesets. These reads also rule out the most likely near-miss: a ruleset created
+but left at `Disabled` or `Evaluate` enforcement would still be *listed* by `/rulesets`, because that
+endpoint returns rulesets at every enforcement level. There is no ruleset object on this repository at all.
+
+**One caveat kept on the record, because it cuts the other way.** The `403` on the create call is the only
+result here that a cached installation token could explain — if `administration: write` was granted within
+the token's lifetime, our token may predate the grant. That caveat does not extend to the four read
+results, so it cannot rescue "the ruleset is set"; it only means the permission route deserves one more
+attempt on a later heartbeat before being called closed.
+
+**Both routes are acceptable, and they are verified by different endpoints.** This matters because the
+Stage A done-criterion was written for rulesets only, and reading it literally would fail a perfectly good
+classic branch protection rule. Classic protection is available on a free personal account once the
+repository is public, and it satisfies the same threat model.
+
+```mermaid
+flowchart TD
+  start{"How was main protected?"}
+  start -->|"Rules → Rulesets"| rs["Repository ruleset"]
+  start -->|"Settings → Branches"| classic["Classic branch protection rule"]
+  rs -->|"proves it"| rsapi["GET /rules/branches/main<br/>lists non_fast_forward + deletion"]
+  classic -->|"does NOT appear in"| rsapi
+  classic -->|"proves it"| brapi["GET /branches/main<br/>protected: true"]
+  rsapi --> brapi
+  brapi --> done["Stage A done"]
+  rs -->|"bypass list must be empty"| bypass["Otherwise Neckkup bypasses it<br/>and the rule blocks nothing"]
+  classic -->|"'Do not allow bypassing' must be ticked"| bypass
+  bypass --> done
+```
+
+Read the diagram as: `protected: true` on `GET /branches/main` is the one signal both routes share, so that
+is the gate. `/rules/branches/main` is additional evidence for the ruleset route only — an empty list there
+is not a failure if the classic route was used. The bypass condition is not a detail on either route: every
+agent pushes as `Neckkup`, who is the repository admin, so a rule that admits an admin bypass reports green
+and prevents nothing.
+
+`main-guard.yml` therefore stays for a second heartbeat, on the reasoning already given above: it is still
+the only thing recording a force push on a branch that is world-readable and unprotected.
