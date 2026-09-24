@@ -34,11 +34,16 @@ exists only to catch the case where GitHub will never act.
    rather than by someone asking repeatedly whether it has.
 2. **An issue monitor is the backstop, and only the backstop.** Auto-merge never fires on a red
    check or a conflicting branch; the PR simply sits, and the work silently never lands. So the
-   same heartbeat schedules one `github_pr` monitor (`nextCheckAt` +15m, `timeoutAt` +2h,
+   same heartbeat schedules one monitor (`kind: "external_service"`, `serviceName:
+   "github-actions"`, `externalRef` = the PR url, `nextCheckAt` +15m, `timeoutAt` +2h,
    `maxAttempts` 4) whose job is to notice failure. When auto-merge has already done its work, the
    wake finds the PR merged, clears the monitor and closes the ticket.
 
 The exact payload is in the repository's `AGENTS.md`, which is where agents will actually look.
+`external_service` is the only accepted `kind`; a descriptive value like `github_pr` is rejected
+with a `400`, and the pull request being watched belongs in `externalRef`. This was found by
+scheduling the real monitor for this ticket rather than by reading the schema, which is the reason
+the payload in `AGENTS.md` is a verified one rather than a plausible one.
 
 ### Rejected
 

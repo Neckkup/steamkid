@@ -73,7 +73,9 @@ PATCH /api/issues/{issueId}
 {
   "executionPolicy": {
     "monitor": {
-      "kind": "github_pr",
+      // "external_service" is the only accepted kind. "github_pr" is rejected
+      // with a 400 — the PR being watched goes in externalRef, not in kind.
+      "kind": "external_service",
       "serviceName": "github-actions",
       "externalRef": "https://github.com/Neckkup/steamkid/pull/<n>",
       "nextCheckAt": "<now + 15 minutes, ISO 8601>",
