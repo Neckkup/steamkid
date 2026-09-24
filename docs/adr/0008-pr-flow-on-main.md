@@ -235,6 +235,33 @@ saving is small. The App's narrow scope is a feature we should not trade away fo
 is not a gate, it rewrites history, and it would land unverified code on `main` before undoing it —
 the exact hazard `--auto` already demonstrated on PR #1.
 
+### The other credential, now measured too
+
+Everything above was measured against the **Paperclip App installation token**. That left one
+loose end worth closing, because it would have changed the answer: Actions jobs do not run on the
+App token, they run on `secrets.GITHUB_TOKEN`, a separate credential with its own permission
+surface. If *that* token could write branch protection, protection-as-code would make Stage B —
+and every future protection change — self-service, and the App's missing permission would stop
+mattering. Nobody had checked, so four tickets' worth of "permanently founder-operated" rested on
+an untested assumption.
+
+Measured on PR #7 with two throwaway workflows, since deleted:
+
+| Probe | Result |
+| --- | --- |
+| A workflow declaring `permissions: administration: write` | **Workflow rejected before any job started** — GitHub's `permissions:` block accepts a fixed key set and `administration` is not in it. The run has zero jobs and reads "this run likely failed because of a workflow file issue". |
+| `GET /branches/main/protection` from a job, with the permissions the token *can* hold (`Contents: read`, `Metadata: read`) | `HTTP/2.0 403 Forbidden` |
+
+Probe A is the stronger of the two: the ceiling is in the workflow schema, not in this repository's
+Actions settings. No `permissions:` block, no repository toggle, and no organisation policy can hand
+`administration` to `GITHUB_TOKEN`, because there is no syntax in which to ask for it. This is the
+same shape of finding as the App manifest — the permission is not withheld, it is not expressible.
+
+So the conclusion above is not "we have not found the right credential yet". Both credentials an
+agent can reach on this stack have now been measured against the same API and both are structurally
+incapable of it. Treat repository administration as outside the agent boundary and stop probing;
+the next heartbeat that suspects otherwise should read this table instead of spending CI on it.
+
 ## A better read-back than Stage A had
 
 Stage A could not verify its own mandatory condition, because "do not allow bypassing" lives behind
