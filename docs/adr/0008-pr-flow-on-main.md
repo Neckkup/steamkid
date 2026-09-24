@@ -133,12 +133,37 @@ agree:
 `delete_branch_on_merge` is still `false`. It is hygiene, not a gate: `gh pr merge --delete-branch`
 deletes the head branch per pull request, so none of the five commands depend on it.
 
-The half of the hazard above that belonged to `allow_auto_merge: false` should now be gone — with
-the setting on, `--auto` has a real auto-merge request to create and no longer has an immediate
-merge to fall back to. That is a prediction, not yet a measurement, so the pull request carrying
-this section is the test: arm `--auto`, read `autoMergeRequest` back, and record the value on
-PRO-123. **The read-back rule stays regardless of the answer**, because `autoMergeRequest: null` is
-still the only thing that separates an armed merge from a completed one.
+### The prediction was wrong: `--auto` still fails open with the setting on
+
+That section predicted the hazard would disappear once `allow_auto_merge` was `true`. It did not.
+Measured the same day on PRO-129:
+
+| PR | `autoMergeAllowed` | Checks when `--auto` ran | Result |
+| --- | --- | --- | --- |
+| #1 | `false` | pending | merged immediately, `autoMergeRequest: null` |
+| #12 | `true` | both green | merged immediately, `autoMergeRequest: null` |
+| #14 | `true` | `verify` **`IN_PROGRESS`** | merged immediately, `autoMergeRequest: null` |
+
+PR #14 is the decisive one, because it removes the confound in #12: the setting was on, `verify` had
+not finished, and the commit was on `main` seconds after the command returned `0`.
+
+The mechanism is ordinary GitHub behaviour and the ADR simply had the dependency backwards.
+Auto-merge is a queue for a **blocked** pull request. With `enforcement_level=off` and no required
+contexts, nothing blocks anything, so there is no queue to join and GitHub merges. `allow_auto_merge`
+makes a gated merge *expressible*; required status checks are what does the gating. **Step 1 alone
+buys nothing operationally** — a useful correction to this ADR's own order-of-operations argument,
+which remains right about the order and wrong about what step 1 delivers on its own.
+
+Consequences now in `AGENTS.md`:
+
+- **The fifth command is suspended.** Agents open the PR, schedule the monitor, and merge by hand on
+  green. `--auto` returns when `npm run verify:stage-b` reports Stage B on, and the way to find out
+  is to run it, not to read this paragraph.
+- **The read-back rule stays**, because `autoMergeRequest: null` is still the only thing that
+  separates an armed merge from a completed one — but a `null` on a merged PR now means fail-open,
+  not that the repository setting is off.
+- **Stage B step 2 stopped being hygiene.** It is the only thing standing between the flow this ADR
+  prescribes and unverified code on `main`.
 
 ## Q3 — Required reviewers?
 
