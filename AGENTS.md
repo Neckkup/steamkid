@@ -14,3 +14,71 @@ Any diagram you produce — in `docs/`, an ADR, a runbook, a plan, a PR
 description, or a task comment — is a `mermaid` code block in Markdown. Not a
 screenshot, not ASCII art, not an exported image. Read `docs/diagrams.md` for
 the diagram-type table and house rules before drawing one.
+
+# How changes reach `main`
+
+`main` is protected. Read [ADR 0008](docs/adr/0008-pr-flow-on-main.md) once; this
+section is the operating summary.
+
+**Never `git push origin main`.** Every change arrives through a pull request
+that passes two required checks, `verify` and `secret-scan`.
+
+**Never spend a heartbeat waiting for CI.** That is the whole point of the flow
+below: you open the PR, hand the waiting to GitHub, and end the run.
+
+## The five commands
+
+```bash
+git switch -c pro-123-short-slug          # branch name: <ticket>-<slug>
+git commit -m "Imperative summary (PRO-123)"
+git push -u origin HEAD
+gh pr create --fill                        # title ends with the ticket id
+gh pr merge --squash --auto --delete-branch # GitHub merges when both checks pass
+```
+
+Then **end the heartbeat.** Do not poll, do not sleep, do not re-run `gh pr
+checks` in a loop. `--auto` means GitHub merges the PR itself the moment
+`verify` and `secret-scan` go green. Nothing needs to be awake for that.
+
+## Before you end that heartbeat, schedule one monitor
+
+Auto-merge fires on green. It does **not** fire when CI is red or the branch
+conflicts — the PR just sits there forever and your work never lands. So the
+same heartbeat that enables auto-merge schedules a single issue monitor, and
+that monitor is the only thing that ever re-checks:
+
+```jsonc
+PATCH /api/issues/{issueId}
+{
+  "executionPolicy": {
+    "monitor": {
+      "kind": "github_pr",
+      "serviceName": "github-actions",
+      "externalRef": "https://github.com/Neckkup/steamkid/pull/<n>",
+      "nextCheckAt": "<now + 15 minutes, ISO 8601>",
+      "timeoutAt": "<now + 2 hours, ISO 8601>",
+      "maxAttempts": 4
+    }
+  }
+}
+```
+
+Confirm the response echoes a non-null `monitorNextCheckAt`, keep the issue
+`in_progress` or `in_review`, and exit. On the wake: if the PR merged, clear the
+monitor and finish the ticket. If CI is red, fix it and push to the same branch —
+auto-merge stays armed across pushes.
+
+## Rules that are not negotiable
+
+- **Branch off current `main`.** `git fetch origin && git switch -c <branch> origin/main`.
+  Required checks are strict here: an out-of-date branch cannot merge.
+- **One ticket per PR**, ticket id in the title.
+- **Do not `--admin`-merge or otherwise route around the checks.** Bypass is
+  disabled for everyone including the repository owner, on purpose — see ADR
+  0007. If you think you need a bypass, you need [CTO](/PRO/agents/cto) instead.
+- **Do not request a reviewer.** Required reviews are deliberately off and
+  cannot work today: every agent pushes as the same GitHub identity (`Neckkup`)
+  and GitHub forbids approving your own pull request. Code review happens on the
+  Paperclip issue, not on the PR.
+- **A red `secret-scan` is never fixed by deleting the check.** Rotate the
+  credential, then remove it from the diff.
