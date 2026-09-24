@@ -128,6 +128,16 @@ const schema = z.object({
   AI_GRADING_INLINE: blankAsUndefined(z.enum(["on", "off"])).transform((value) => value ?? "on"),
 
   /**
+   * Kill switch for the learning path engine (PRO-10).
+   *
+   * Set to `off` to disable `GET /api/learning-path/next` without a deploy.
+   * Defaults to `on`; the route returns 503 when off.
+   */
+  LEARNING_PATH_ENABLED: blankAsUndefined(z.enum(["on", "off"])).transform(
+    (value) => value ?? "on",
+  ),
+
+  /**
    * How long a child waits for the grader before the screen stops waiting.
    *
    * Not a cancellation: the call keeps running and its verdict is still stored
