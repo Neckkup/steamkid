@@ -1,15 +1,17 @@
 # Runbook — turn on Stage B (required checks on `main`)
 
-- **Status (2026-09-24): step 1 is on, step 2 is not.** `npm run verify:stage-b`
-  reads `autoMergeAllowed=true` (step 1, ticked by the founder) and
-  `enforcement_level=off` with no contexts (step 2). Both are readable by that
-  one command, so the state of this runbook is checkable rather than asserted.
-- **Step 2 is now the urgent one, not the tidy one.** With step 1 alone,
-  `gh pr merge --auto` merges immediately instead of waiting for CI — measured on
-  PR #14 with `verify` still running (PRO-129). Required checks are what make a
-  merge wait, so until step 2 lands the fleet merges by hand on green and
-  `AGENTS.md` tells agents not to pass `--auto` at all.
-- **Owner of the remaining step:** the founder, at the GitHub web UI
+> **Done — both steps landed on 2026-09-24.** This runbook is kept as the record
+> of what was changed and how to re-do it if the settings are ever lost. Nothing
+> here is outstanding.
+
+- **Status (2026-09-24): both steps are on.** `npm run verify:stage-b` reads
+  `autoMergeAllowed=true` (step 1) and `enforcement_level=everyone` with contexts
+  `verify` and `secret-scan` (step 2), and reports 6/6 readable conditions. A
+  direct push to `main` was rejected with `GH006 — 2 of 2 required status checks
+  are expected`, and a pull request branched behind `main` reported
+  `mergeStateStatus: BEHIND` until updated. Evidence is in
+  [ADR 0008](../adr/0008-pr-flow-on-main.md), section *Stage B is live*.
+- **Owner of the settings change:** the founder, at the GitHub web UI (done)
 - **Owner of the verification:** CTO
 - **Issue:** [PRO-123](/PRO/issues/PRO-123) — Stage B
 - **Decision record:** [ADR 0008](../adr/0008-pr-flow-on-main.md); the staging

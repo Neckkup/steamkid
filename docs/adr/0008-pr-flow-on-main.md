@@ -1,6 +1,6 @@
 # ADR 0008 — Stage B: `main` becomes PR-only
 
-- **Status:** decided; **not yet enforced** — one founder action is outstanding, named at the bottom.
+- **Status:** decided and **enforced** as of 2026-09-24. Evidence in *Stage B is live* below.
 - **Date:** 2026-09-24
 - **Decided by:** CTO
 - **Issue:** PRO-123 (Stage B), successor to PRO-121 (Stage A) and PRO-111 (the decision)
@@ -502,6 +502,89 @@ flow with no way to wait for CI except burning heartbeats — the cost this ADR 
 this lands the founder cannot push directly to `main` either. That is the intended design — it is
 what made Stage A real — but it is a change to how the founder personally works, and it should not
 be a surprise discovered at the keyboard.
+
+## Stage B is live — measured 2026-09-24
+
+The founder made both settings changes. Read back from `main` with `contents:read` only:
+
+```
+protection.required_status_checks = {
+  contexts: ["verify", "secret-scan"],
+  enforcement_level: "everyone"
+}
+```
+
+`enforcement_level: everyone` is how the legacy API renders "do not allow bypassing" — the checks
+bind the repository owner too, so the bypass list is empty as PRO-123 required. `npm run
+verify:stage-b` reports **6/6 readable conditions hold**, with `strict` still `UNK` because classic
+branch protection does not expose it. The founder used the classic Settings → Branches page, not a
+ruleset; `GET /rules/branches/main` still returns only the Stage A `deletion` and `non_fast_forward`
+rules, which is why the verifier reads both surfaces.
+
+### Evidence 1 — a direct push to `main` is rejected
+
+The piece PRO-123 declared non-negotiable, because a settings page is not evidence of what happens
+to an agent:
+
+```
+$ git push origin main
+remote: error: GH006: Protected branch update failed for refs/heads/main.
+remote: - 2 of 2 required status checks are expected.
+ ! [remote rejected] main -> main (protected branch hook declined)
+```
+
+Note *what* rejected it. Stage A's rule would have said `non_fast_forward`; this says the required
+checks are expected. The push was a fast-forward of a legitimate commit by the repository owner,
+and it still failed. That is Stage B, not Stage A, doing the work.
+
+### Evidence 2 — `strict` blocks a branch behind `main`
+
+`strict` cannot be read back from classic branch protection at all, so it is settled by doing it.
+This ADR's own pull request was branched deliberately from `main~1`:
+
+```
+$ gh pr view <n> --json mergeStateStatus -q .mergeStateStatus
+BEHIND
+```
+
+`BEHIND` is a distinct state from `BLOCKED` (failing or pending checks) and `CLEAN`. GitHub only
+reports it when "require branches to be up to date" is on, so seeing it is the read-back that the
+settings API refuses to give. A plain merge was refused in the same terms:
+
+```
+$ gh pr merge 24 --squash
+X Pull request Neckkup/steamkid#24 is not mergeable: the head branch is not up to date
+  with the base branch.
+```
+
+Updating the branch moved it `BEHIND` -> `BLOCKED`, i.e. waiting on checks rather than on freshness.
+**Use the API, not `gh pr update-branch`** — that subcommand does not exist in the `gh` build on
+these runners, and a missing subcommand is one more completion condition that fails open:
+
+```bash
+gh api -X PUT repos/Neckkup/steamkid/pulls/<n>/update-branch
+```
+
+### Evidence 3 — the fifth command stopped failing open
+
+`gh pr merge --squash --auto` merged immediately on PRs #1, #12 and #14, the last of those while
+`verify` was still `IN_PROGRESS`. Four heartbeats blamed the repository setting; the setting was
+never the cause. GitHub creates an auto-merge request only for a pull request that is currently
+**blocked**, and with no required checks nothing was ever blocked, so `--auto` found a mergeable PR
+and merged it. Enabling `allow_auto_merge` made a gated merge *expressible*; required status checks
+made one *necessary*. With both in place, arming `--auto` now returns a non-null `autoMergeRequest`
+and the merge waits for green.
+
+`AGENTS.md` un-suspends the fifth command accordingly, and keeps the read-back
+(`gh pr view <n> --json autoMergeRequest`) as a standing rule: a flag is a request, not a receipt.
+
+### What the founder's two clicks cost us, and what to take from it
+
+Five heartbeats were spent restating the same ask, eight monitor firings read the same
+`enforcement_level=off`, and three separate tools (`gh pr merge --auto`, `status: blocked` plus a
+monitor, an `until` loop over `gh pr checks`) were found to fail open at exactly the step meant to
+stop work being dropped silently. The durable lesson is in `AGENTS.md`: **a completion condition
+must be a positive signal, never the absence of one**, and read every mutation back.
 
 ## Migration cost if we are wrong
 
