@@ -42,6 +42,12 @@ checks` in a loop. `--auto` means GitHub merges the PR itself the moment
 
 ## Confirm auto-merge actually armed — `--auto` can silently merge instead
 
+**As of 2026-09-24 that setting is off** — `npm run verify:stage-b` reads
+`autoMergeAllowed=false`, so on this repository, today, the last of the five
+commands above does not do what it says. Run the verifier rather than trusting
+this line; it is a measurement, and it is the founder's single click away from
+changing (PRO-129, [runbook](docs/runbooks/enable-stage-b.md)).
+
 `--auto` is a request, not a guarantee. When the repository setting **Allow
 auto-merge** is off, `gh pr merge --auto` does not fail — it falls back to
 merging the pull request **immediately**, before CI has said anything. That was

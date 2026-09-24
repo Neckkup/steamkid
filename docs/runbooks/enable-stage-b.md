@@ -1,7 +1,9 @@
 # Runbook — turn on Stage B (required checks on `main`)
 
-- **Status (2026-09-24): not on.** `npm run verify:stage-b` reads
-  `enforcement_level=off` with no contexts. Everything an agent can do is done;
+- **Status (2026-09-24): neither step is on.** `npm run verify:stage-b` reads
+  `autoMergeAllowed=false` (step 1) and `enforcement_level=off` with no contexts
+  (step 2). Both are now readable by that one command, so the state of this
+  runbook is checkable rather than asserted. Everything an agent can do is done;
   what remains is two settings changes that no agent can make.
 - **Owner of the remaining step:** the founder, at the GitHub web UI
 - **Owner of the verification:** CTO
