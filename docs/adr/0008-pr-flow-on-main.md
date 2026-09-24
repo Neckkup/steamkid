@@ -269,6 +269,33 @@ Two consequences:
   that speaks to what actually happens to an agent rather than what the settings claim. It is now
   cheap confirmation of a readable fact rather than the sole signal.
 
+### The one field that is still invisible: `strict`
+
+The section above was written as though `/branches/main` covered the whole criterion. Re-reading the
+full response shows it does not. The legacy protection object has exactly five readable fields —
+`protected`, `protection.enabled`, and inside `required_status_checks` the `enforcement_level`,
+`contexts` and `checks`. **`strict` is not among them**, and there is no other route to it:
+`/branches/main/protection` is an `administration` endpoint, and `/rules/branches/main` returns `[]`
+for a classic rule.
+
+So "require branches to be up to date" — which the section above treats as settled, and which
+PRO-123 asks for by name — cannot be read back at all. It gets its own experiment, and it is a cheap
+one: branch from a commit behind `main`, open a PR, and watch GitHub refuse to merge until the
+branch is updated. If it merges, the box was not ticked.
+
+This does not weaken the read-back claim for the rest. `enforcement_level` really does settle the
+bypass question, and that is the expensive one. It narrows the claim to: **three of the four
+settings are readable, `strict` is not, and Stage B closes on two experiments rather than one.**
+
+`npm run verify:stage-b` (`scripts/pro123-check.ts`) is that read-back as a command. It asserts
+Stage A plus the three readable Stage B conditions, exits non-zero when any fails, and prints the
+two experiments it cannot perform rather than quietly scoring itself as complete. The two
+experiments are also why it says "readable conditions" and not "checks": what it can see is a
+proper subset of what Stage B means. The founder-facing half — which two
+settings, in which order, and what a mistyped context name does — is
+[docs/runbooks/enable-stage-b.md](../runbooks/enable-stage-b.md), written because by then the same
+request had been made on three tickets as prose in threads that scroll away.
+
 Check context names were verified rather than assumed, against commit `441a9c8`:
 `GET /repos/Neckkup/steamkid/commits/441a9c8/check-runs` returns exactly `verify` and `secret-scan`,
 both from the `github-actions` app. Those two strings are what goes in the required list; a typo
@@ -285,13 +312,15 @@ Steps 2 and 3 are one change and the order between them is load-bearing — see 
 3. **Add the required checks** to the existing classic rule on `main`: `verify` and `secret-scan`,
    with "require branches to be up to date" on, leaving "do not allow bypassing the above settings"
    ticked as Stage A left it.
-4. **An agent reads it back** — `GET /branches/main` showing `contexts` containing both names and
-   `enforcement_level` not `off`.
+4. **An agent reads it back** — `npm run verify:stage-b`, which wants `contexts` containing both
+   names and `enforcement_level` at `everyone`.
 5. **An agent attempts one direct push to `main`** and records the rejection. That is the evidence
    PRO-123 declares non-negotiable.
+6. **An agent opens a PR from a branch behind `main`** and records that it cannot merge until
+   updated. That is the only way to see `strict`, which step 4 cannot read.
 
 Steps 2 and 3 need `administration`, which per Q5 the Paperclip App cannot hold and cannot be
-granted. **The founder does 2 and 3 in the settings UI; agents do 1, 4 and 5.** This is the only
+granted. **The founder does 2 and 3 in the settings UI; agents do 1, 4, 5 and 6.** This is the only
 split available, not a fallback from a better one, and it does not improve with another ask.
 
 The founder's half is two settings on one visit:

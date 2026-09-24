@@ -91,6 +91,14 @@ Confirm the response echoes a non-null `monitorNextCheckAt`, keep the issue
 monitor and finish the ticket. If CI is red, fix it and push to the same branch —
 auto-merge stays armed across pushes.
 
+**`blocked` and a monitor are mutually exclusive.** The scheduler only wakes
+issues in `in_progress` or `in_review`, so `PATCH`ing `status: "blocked"` in the
+same request that sets the monitor stores the timestamp against an issue that
+can never fire — and the response comes back with `monitorNextCheckAt: null`
+rather than an error. Observed on PRO-123. If a pull request is still in flight,
+the issue is not blocked; leave it `in_review`. Only mark it `blocked` once
+nothing is left to wake for, and say who unblocks it.
+
 ## Rules that are not negotiable
 
 - **Branch off current `main`.** `git fetch origin && git switch -c <branch> origin/main`.
@@ -105,7 +113,11 @@ auto-merge stays armed across pushes.
   repository settings all answer `403` for every agent, permanently. If a task
   needs one of those, it needs the founder at the GitHub UI; do not spend a
   heartbeat re-testing the permission or asking for it to be granted. See ADR
-  0008, Q5 — this has been measured on three separate tickets.
+  0008, Q5 — this has been measured on four separate tickets. To check the state
+  of `main`'s protection without that permission, run `npm run verify:stage-b`;
+  to hand the founder the settings change, link
+  [docs/runbooks/enable-stage-b.md](docs/runbooks/enable-stage-b.md) rather than
+  retyping the clicks into a comment.
 - **Do not request a reviewer.** Required reviews are deliberately off and
   cannot work today: every agent pushes as the same GitHub identity (`Neckkup`)
   and GitHub forbids approving your own pull request. Code review happens on the
