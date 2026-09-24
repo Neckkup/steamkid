@@ -33,7 +33,8 @@
     "browser:check": "bash scripts/setup-browser.sh --check",
     "visual:audit": "bash -c 'eval \"$(bash scripts/setup-browser.sh)\" && tsx scripts/visual-audit.ts \"$@\"' --",
     "eval:grading": "tsx --env-file-if-exists=.env.local scripts/grading-eval.ts",
-    "eval:raters": "tsx --env-file-if-exists=.env.local scripts/rater-agreement.ts"
+    "eval:raters": "tsx --env-file-if-exists=.env.local scripts/rater-agreement.ts",
+    "export:training": "tsx --env-file-if-exists=.env.local scripts/export-training-dataset.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.3",
