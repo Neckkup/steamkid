@@ -91,6 +91,14 @@ Confirm the response echoes a non-null `monitorNextCheckAt`, keep the issue
 monitor and finish the ticket. If CI is red, fix it and push to the same branch —
 auto-merge stays armed across pushes.
 
+**`blocked` and a monitor are mutually exclusive.** The scheduler only wakes
+issues in `in_progress` or `in_review`, so `PATCH`ing `status: "blocked"` in the
+same request that sets the monitor stores the timestamp against an issue that
+can never fire — and the response comes back with `monitorNextCheckAt: null`
+rather than an error. Observed on PRO-123. If a pull request is still in flight,
+the issue is not blocked; leave it `in_review`. Only mark it `blocked` once
+nothing is left to wake for, and say who unblocks it.
+
 ## Rules that are not negotiable
 
 - **Branch off current `main`.** `git fetch origin && git switch -c <branch> origin/main`.
