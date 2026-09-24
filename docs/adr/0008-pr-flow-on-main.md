@@ -60,7 +60,7 @@ because only the unhappy path needs an agent to think:
 flowchart TD
   open["Agent: branch, commit, push, open PR"]
   auto["Agent: enable auto-merge (squash)"]
-  mon["Agent: schedule github_pr monitor<br/>+15m, timeout +2h"]
+  mon["Agent: schedule external_service monitor<br/>+15m, timeout +2h"]
   exit["Heartbeat ends — nothing is awake"]
   open --> auto --> mon --> exit
   exit -.-> gh{"GitHub watches the checks"}
