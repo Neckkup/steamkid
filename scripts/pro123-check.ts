@@ -11,9 +11,27 @@
  * cannot write, and the obvious read — `GET /branches/main/protection` — is
  * itself an `administration` endpoint and answers `403`.
  *
- * This script uses the one endpoint that works with the `contents:read` we do
- * have, `GET /repos/{owner}/{repo}/branches/main`, whose `protection` object is
- * the legacy shape. That shape is narrower than the settings page, and the
+ * ## Two places the founder could have put the rule
+ *
+ * GitHub has two independent branch-rule systems and the settings UI steers
+ * towards the newer one. A required check configured under **Settings -> Rules
+ * -> Rulesets** does not appear anywhere in the classic branch payload. So a
+ * checker that reads only the classic shape reports `enforcement_level=off` and
+ * announces that the founder has not ticked anything — while the rule is on and
+ * blocking merges. That is a false negative on the single question this ticket
+ * turns on, and it fails in the direction that wastes a person's time.
+ *
+ * Both are therefore read, with the `contents:read` we actually hold:
+ *
+ *   classic   GET /repos/{owner}/{repo}/branches/main   -> .protection
+ *   ruleset   GET /repos/{owner}/{repo}/rules/branches/main
+ *
+ * The second is measured, not assumed: it answers `200 []` today rather than
+ * `403`, which is how we know it is inside our permissions.
+ *
+ * ## What each source can and cannot tell us
+ *
+ * The classic `protection` object is narrower than the settings page, and the
  * narrowing matters, so it is spelled out rather than glossed:
  *
  *   readable   protected, protection.enabled
@@ -28,33 +46,41 @@
  * repository owner is bound too. So the ticket's "bypass list is still empty"
  * criterion is readable after all, as `everyone` rather than `non_admins`.
  *
- * `strict` is not readable by any route available to us, so this script cannot
- * assert it and does not pretend to. It prints the two empirical tests that
- * close the gap instead — both of them things that happen to an agent rather
- * than things a settings page claims:
+ * The ruleset source trades those two away and hands back the one the classic
+ * shape withholds: a `required_status_checks` rule carries
+ * `strict_required_status_checks_policy` directly, so under a ruleset **strict
+ * stops being an experiment and becomes a read**. It says nothing about bypass
+ * actors, because the endpoint lists the rules that apply and not who escapes
+ * them.
+ *
+ * Nothing here pretends to know what it cannot read. A condition the configured
+ * source does not expose prints `UNK`, is excluded from the score, and is listed
+ * under the empirical tests that do settle it — both of them things that happen
+ * to an agent rather than things a settings page claims:
  *
  *   1. a direct `git push origin main` is rejected      (the rule binds at all)
  *   2. a PR from a branch behind `main` is blocked until
  *      it is updated                                     (strict is on)
  *
- * Step 1 of the runbook — **Allow auto-merge** — is checked here too, because
- * it is the half that fails silently. `gh pr merge --auto` does not error when
- * the repository setting is off; on PR #1 it merged immediately with no check
- * having run and reported success (ADR 0008, Q2). An agent following the
+ * ## Step 1, the half that fails silently
+ *
+ * **Allow auto-merge** is checked here too. `gh pr merge --auto` does not error
+ * when the repository setting is off; on PR #1 it merged immediately with no
+ * check having run and reported success (ADR 0008, Q2). An agent following the
  * documented flow would believe it had armed a gated merge. That setting is not
  * on the legacy branches payload, but it is readable over GraphQL with the
  * `metadata:read` every installation holds, so it costs one extra request to
  * turn "we think auto-merge is on" into a measurement.
  *
  * That check passing is necessary and not sufficient, which is why its PASS text
- * changes with `enforcement_level`. Auto-merge is a queue for a *blocked* pull
- * request; while no check is required, nothing is blocked, so `--auto` merges on
- * the spot whatever the setting says — measured on PR #14 with `verify` still
- * running (ADR 0008). Step 2 is what makes step 1 mean anything.
+ * changes with enforcement. Auto-merge is a queue for a *blocked* pull request;
+ * while no check is required, nothing is blocked, so `--auto` merges on the spot
+ * whatever the setting says — measured on PR #14 with `verify` still running
+ * (ADR 0008). Step 2 is what makes step 1 mean anything.
  *
- * Exit code is 0 only when every readable condition holds, so this is safe to
+ * Exit code is 0 only when every *readable* condition holds, so this is safe to
  * use as the gate on closing PRO-123, and afterwards as a drift check: a
- * required check that quietly disappears reads as FAIL here.
+ * required check that quietly disappears reads as FAIL here, from either source.
  */
 
 import { execFileSync } from "node:child_process";
@@ -85,6 +111,16 @@ type BranchResponse = {
   readonly protection?: LegacyProtection;
 };
 
+/** One entry of `GET /rules/branches/{branch}`; only the rule type we care about is typed out. */
+type BranchRule = {
+  readonly type?: string;
+  readonly ruleset_id?: number;
+  readonly parameters?: {
+    readonly strict_required_status_checks_policy?: boolean;
+    readonly required_status_checks?: readonly { readonly context?: string }[];
+  };
+};
+
 /** The merge settings from `Settings -> General -> Pull Requests`, over GraphQL. */
 type MergeSettings = {
   readonly autoMergeAllowed?: boolean;
@@ -92,13 +128,27 @@ type MergeSettings = {
   readonly deleteBranchOnMerge?: boolean;
 };
 
+/**
+ * The two sources normalised to one shape. `null` means "this source does not
+ * expose it" and is carried all the way to the output rather than defaulted,
+ * because defaulting it is exactly how a checker starts lying.
+ */
+type ChecksEvidence = {
+  readonly where: string;
+  readonly enforced: boolean;
+  readonly bindsEveryone: boolean | null;
+  readonly strict: boolean | null;
+  readonly contexts: readonly string[];
+};
+
 type Result = {
   readonly name: string;
-  readonly passed: boolean;
+  /** `null` = not readable from the source that is configured. */
+  readonly passed: boolean | null;
   readonly detail: string;
 };
 
-function check(name: string, passed: boolean, detail: string): Result {
+function check(name: string, passed: boolean | null, detail: string): Result {
   return { name, passed, detail };
 }
 
@@ -130,8 +180,8 @@ function resolveToken(): { value: string; source: string } {
   );
 }
 
-async function fetchBranch(token: string): Promise<BranchResponse> {
-  const response = await fetch(`https://api.github.com/repos/${REPO}/branches/${BRANCH}`, {
+async function githubGet<T>(path: string, token: string, needs: string): Promise<T> {
+  const response = await fetch(`https://api.github.com${path}`, {
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${token}`,
@@ -141,15 +191,21 @@ async function fetchBranch(token: string): Promise<BranchResponse> {
 
   if (!response.ok) {
     const body = await response.text();
-    // A 403 here is not the administration gate — this endpoint needs only
+    // A 403 on these is not the administration gate — they need only
     // contents:read — so say so, or the next reader will misdiagnose it.
     throw new Error(
-      `GET /repos/${REPO}/branches/${BRANCH} answered ${response.status}. ` +
-        `This endpoint needs only contents:read, so this is not the administration gate. ${body.slice(0, 300)}`,
+      `GET ${path} answered ${response.status}. This endpoint needs only ${needs}, ` +
+        `so this is not the administration gate. ${body.slice(0, 300)}`,
     );
   }
-  return (await response.json()) as BranchResponse;
+  return (await response.json()) as T;
 }
+
+const fetchBranch = (token: string) =>
+  githubGet<BranchResponse>(`/repos/${REPO}/branches/${BRANCH}`, token, "contents:read");
+
+const fetchBranchRules = (token: string) =>
+  githubGet<readonly BranchRule[]>(`/repos/${REPO}/rules/branches/${BRANCH}`, token, "contents:read");
 
 /**
  * REST's `GET /repos/{owner}/{repo}` carries `allow_auto_merge`, but reading it
@@ -186,45 +242,85 @@ async function fetchMergeSettings(token: string): Promise<MergeSettings> {
   return body.data.repository;
 }
 
-function evaluate(branch: BranchResponse, merge: MergeSettings): Result[] {
-  const protection = branch.protection;
-  const required = protection?.required_status_checks;
-  const level = required?.enforcement_level ?? "off";
-  const contexts = [...(required?.contexts ?? [])].sort();
-  const expected = [...REQUIRED_CHECKS].sort();
+/**
+ * Pick the source that actually carries required checks. A ruleset wins when it
+ * has one, because a ruleset rule binds regardless of what the classic payload
+ * says — and the classic payload says `off` for a branch ruled entirely by
+ * rulesets, which is the false negative this function exists to prevent.
+ */
+function readChecks(branch: BranchResponse, rules: readonly BranchRule[]): ChecksEvidence {
+  const rule = rules.find((entry) => entry.type === "required_status_checks");
+  if (rule) {
+    return {
+      where: `ruleset ${rule.ruleset_id ?? "?"} (Settings -> Rules -> Rulesets)`,
+      enforced: true,
+      // The endpoint lists the rules that apply, not who may bypass them.
+      bindsEveryone: null,
+      strict: rule.parameters?.strict_required_status_checks_policy ?? false,
+      contexts: (rule.parameters?.required_status_checks ?? [])
+        .map((entry) => entry.context)
+        .filter((context): context is string => typeof context === "string"),
+    };
+  }
 
+  const required = branch.protection?.required_status_checks;
+  const level = required?.enforcement_level ?? "off";
+  return {
+    where: "classic branch protection (Settings -> Branches)",
+    enforced: level !== "off",
+    bindsEveryone: level === BINDS_EVERYONE,
+    // Classic protection does not expose `strict` on any endpoint we can reach.
+    strict: null,
+    contexts: required?.contexts ?? [],
+  };
+}
+
+function evaluate(branch: BranchResponse, checks: ChecksEvidence, merge: MergeSettings): Result[] {
+  const contexts = [...checks.contexts].sort();
+  const expected = [...REQUIRED_CHECKS].sort();
   const missing = expected.filter((name) => !contexts.includes(name));
   const extra = contexts.filter((name) => !expected.includes(name as (typeof REQUIRED_CHECKS)[number]));
 
   return [
     check(
       "Stage A — main is protected",
-      branch.protected === true && protection?.enabled === true,
-      `protected=${branch.protected}, protection.enabled=${protection?.enabled}`,
+      branch.protected === true && branch.protection?.enabled === true,
+      `protected=${branch.protected}, protection.enabled=${branch.protection?.enabled}`,
     ),
     check(
       "Stage B — required status checks are enforced",
-      level !== "off",
-      level === "off"
-        ? "enforcement_level=off — the founder has not ticked Require status checks yet"
-        : `enforcement_level=${level}`,
+      checks.enforced,
+      checks.enforced
+        ? `enforced via ${checks.where}`
+        : "no required checks in classic branch protection or in any ruleset — " +
+          "the founder has not ticked Require status checks yet",
     ),
     check(
       "Stage B — the bypass list is empty (checks bind the owner too)",
-      level === BINDS_EVERYONE,
-      level === BINDS_EVERYONE
-        ? `enforcement_level=${level}`
-        : `enforcement_level=${level}, want ${BINDS_EVERYONE} — untick "Allow specified actors to bypass" / tick "Do not allow bypassing"`,
+      checks.bindsEveryone,
+      checks.bindsEveryone === null
+        ? `not exposed by ${checks.where} — settled by the push test below`
+        : checks.bindsEveryone
+          ? `enforcement_level=${BINDS_EVERYONE}`
+          : `enforcement_level=${branch.protection?.required_status_checks?.enforcement_level ?? "off"}, ` +
+            `want ${BINDS_EVERYONE} — untick "Allow specified actors to bypass" / tick "Do not allow bypassing"`,
+    ),
+    check(
+      "Stage B — branches must be up to date before merging (strict)",
+      checks.strict,
+      checks.strict === null
+        ? `not exposed by ${checks.where} — settled by the behind-main test below`
+        : `strict_required_status_checks_policy=${checks.strict}`,
     ),
     check(
       "Step 1 — auto-merge is allowed on the repository",
       merge.autoMergeAllowed === true,
       merge.autoMergeAllowed === true
-        ? level === "off"
-          ? "autoMergeAllowed=true — but nothing on `main` blocks a pull request yet, so there is " +
+        ? checks.enforced
+          ? "autoMergeAllowed=true — `gh pr merge --auto` arms a gated merge"
+          : "autoMergeAllowed=true — but nothing on `main` blocks a pull request yet, so there is " +
             "no queue for `--auto` to join and it STILL merges immediately (measured on PR #14, " +
             "with `verify` IN_PROGRESS). This PASS means the mechanism exists, not that it gates."
-          : "autoMergeAllowed=true — `gh pr merge --auto` arms a gated merge"
         : "autoMergeAllowed=false — `gh pr merge --auto` does NOT error here, it merges " +
           "immediately with no check run. Settings -> General -> Pull Requests -> Allow auto-merge",
     ),
@@ -250,20 +346,27 @@ async function main(): Promise<void> {
   console.log(`repo   ${REPO}#${BRANCH}`);
   console.log(`token  ${token.source}`);
 
-  const [branch, merge] = await Promise.all([
+  const [branch, rules, merge] = await Promise.all([
     fetchBranch(token.value),
+    fetchBranchRules(token.value),
     fetchMergeSettings(token.value),
   ]);
-  const results = evaluate(branch, merge);
+  const checks = readChecks(branch, rules);
+  const results = evaluate(branch, checks, merge);
+
+  console.log(`rules  ${rules.length} ruleset rule(s) on ${BRANCH}; checks read from ${checks.where}`);
 
   console.log("");
   for (const result of results) {
-    console.log(`${result.passed ? "PASS" : "FAIL"}  ${result.name} — ${result.detail}`);
+    const label = result.passed === null ? "UNK " : result.passed ? "PASS" : "FAIL";
+    console.log(`${label}  ${result.name} — ${result.detail}`);
   }
 
-  const failed = results.filter((result) => !result.passed);
+  const failed = results.filter((result) => result.passed === false);
+  const unknown = results.filter((result) => result.passed === null);
+  const readable = results.length - unknown.length;
   console.log("");
-  console.log(`${results.length - failed.length}/${results.length} readable conditions hold`);
+  console.log(`${readable - failed.length}/${readable} readable conditions hold`);
 
   if (merge.deleteBranchOnMerge !== true) {
     console.log("");
@@ -274,8 +377,12 @@ async function main(): Promise<void> {
   }
 
   console.log("");
-  console.log("Not readable without the administration permission — prove these by doing them:");
-  console.log("  strict        open a PR from a branch behind main; it must be blocked until updated");
+  console.log("Prove these by doing them — a settings page is not evidence:");
+  if (checks.strict === null) {
+    console.log("  strict        open a PR from a branch behind main; it must be blocked until updated");
+  }
+  // Always printed. `enforcement_level=everyone` is a strong read, but PRO-123
+  // asks for what happens to an agent, and only the push answers that.
   console.log("  rule binds    git push origin main must be rejected (PRO-123's required evidence)");
 
   if (failed.length > 0) {
@@ -285,7 +392,7 @@ async function main(): Promise<void> {
     );
   }
   console.log("");
-  console.log("Stage B is on as far as the readable settings go. Run the two empirical tests above.");
+  console.log("Stage B is on as far as the readable settings go. Run the tests above.");
 }
 
 main().catch((error: Error) => {
