@@ -83,6 +83,21 @@ function mcqRowTone(selected: boolean, locked: boolean): string {
     : "border-line bg-surface hover:border-brand";
 }
 
+/**
+ * Colours for one row of the ordering item's chosen sequence.
+ *
+ * PRO-132 greyed the *option* buttons, but `isAnswered` only lets an ordering
+ * item be sent once every option has been picked, so by the time the fieldset
+ * locks there are no option buttons left on screen (PRO-134) — the only thing
+ * the child is still looking at is this list. It gets the same treatment as the
+ * chosen MCQ row: grey border, grey fill and a grey step number instead of
+ * brand blue, with the label at full strength because the feedback card below
+ * refers to the order the child just sent.
+ */
+function orderRowTone(locked: boolean): string {
+  return locked ? "border-muted bg-line" : "border-brand bg-brand-soft";
+}
+
 export function AnswerInput({
   item,
   answer,
@@ -181,9 +196,15 @@ export function AnswerInput({
                 return (
                   <li
                     key={id}
-                    className="flex items-center gap-3 rounded-2xl border-2 border-brand bg-brand-soft p-3"
+                    className={`flex items-center gap-3 rounded-2xl border-2 p-3 transition-colors ${orderRowTone(
+                      disabled,
+                    )}`}
                   >
-                    <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand text-base font-bold text-white">
+                    <span
+                      className={`flex size-8 shrink-0 items-center justify-center rounded-full text-base font-bold text-white ${
+                        disabled ? "bg-muted" : "bg-brand"
+                      }`}
+                    >
                       {index + 1}
                     </span>
                     <span className="flex-1">{option?.label}</span>
@@ -220,7 +241,10 @@ export function AnswerInput({
                   // Same lock signal as the MCQ rows: once the answer is sent,
                   // these stop looking tappable instead of only stopping being
                   // tappable.
-                  className="tap rounded-2xl border-2 border-line bg-surface p-3 text-left text-lg transition-colors enabled:hover:border-brand disabled:cursor-default disabled:bg-background disabled:text-muted"
+                  // An MCQ row says "tap me" with a pointer cursor; these
+                  // buttons never did, so on a desktop the one item that needs
+                  // four taps was the one that looked inert (PRO-134).
+                  className="tap rounded-2xl border-2 border-line bg-surface p-3 text-left text-lg transition-colors enabled:cursor-pointer enabled:hover:border-brand disabled:cursor-default disabled:bg-background disabled:text-muted"
                 >
                   {option.label}
                 </button>
