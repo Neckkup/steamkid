@@ -30,15 +30,20 @@
  * | difficulty             | int      | 1–3. |
  * | skill_weights          | object   | Rubric skill codes → weight (sum ≤ 1). |
  * | rubric                 | object   | Full rubric criteria JSON from rubric_version. |
- * | learner_answer_redacted| object   | The redacted answer snapshot used by the model. |
- * | ai_scores              | object   | Raw AI scores per skill code. |
- * | effective_scores       | object   | The score that counts: teacher override if present, else ai_scores. |
- * | teacher_corrected      | boolean  | True when a teacher changed the AI score. |
- * | model                  | text     | The model id used for grading (e.g. "gemini-3.8-flash"). |
- * | prompt_name            | text     | Langfuse prompt name (e.g. "grading/sci-cer-short"). |
- * | prompt_version         | int      | Langfuse prompt version number. |
- * | redaction_version      | text     | Which redaction pass was applied. |
- * | created_at             | timestamptz | When the verdict was written. |
+ * | learner_answer_redacted    | object   | The redacted answer snapshot used by the model. |
+ * | effective_scores           | object   | Per-skill map: {score, max, weight, ai_score, teacher_corrected, reason}. `ai_score` is what the model gave; `score` is what counts (teacher override if present). |
+ * | ai_normalized_score        | numeric  | Weighted 0–1 score the AI computed before any teacher correction. |
+ * | effective_normalized_score | numeric  | Weighted 0–1 score after applying any teacher corrections. |
+ * | teacher_corrected          | boolean  | True when at least one skill was corrected by a teacher. |
+ * | corrected_skill_count      | int      | How many skills the teacher changed. |
+ * | instruction_attempt        | boolean  | True when the child's text appeared to instruct the grader. |
+ * | model                      | text     | The model id used for grading (e.g. "gemini-3.8-flash"). |
+ * | prompt_name                | text     | Langfuse prompt name (e.g. "grading/sci-cer-short"). |
+ * | prompt_version             | int      | Langfuse prompt version number. |
+ * | rubric_version             | text     | Rubric version tag (e.g. "SCI_CER_SHORT@1"). |
+ * | grade_version              | text     | Grading engine version (e.g. "ai-grade@1"). |
+ * | redaction_version          | text     | Which redaction pass was applied. |
+ * | created_at                 | timestamptz | When the verdict was written. |
  *
  * ### behaviour (ml.v_behaviour_sequences)
  *
@@ -108,10 +113,13 @@ type DatasetKind = "grading" | "behaviour" | "growth";
 const QUERIES: Record<DatasetKind, string> = {
   grading: `
     SELECT learner_ref, grade_band, verdict_id, correlation_id,
-           prompt, item_type, difficulty, skill_weights, rubric,
-           learner_answer_redacted, ai_scores, effective_scores,
-           teacher_corrected, model, prompt_name, prompt_version,
-           redaction_version, created_at
+           item_id, attempt_number, prompt, item_type, difficulty,
+           skill_weights, rubric, learner_answer_redacted,
+           effective_scores, ai_normalized_score,
+           effective_normalized_score, teacher_corrected,
+           corrected_skill_count, instruction_attempt,
+           model, prompt_name, prompt_version,
+           rubric_version, grade_version, redaction_version, created_at
     FROM ml.v_grading_examples
     ORDER BY created_at
   `,
