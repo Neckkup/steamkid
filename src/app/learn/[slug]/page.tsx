@@ -17,7 +17,11 @@ export default async function LessonPage({ params }: { params: Promise<{ slug: s
 
   return (
     <PageShell>
-      <LessonTracker lessonId={lesson.id} contentVersion={lesson.contentVersion} />
+      <LessonTracker
+        lessonId={lesson.id}
+        contentVersion={lesson.contentVersion}
+        skillTags={lesson.skillTags}
+      />
 
       <article>
         <header className="mb-6">
@@ -30,7 +34,7 @@ export default async function LessonPage({ params }: { params: Promise<{ slug: s
 
         <div className="grid gap-6">
           {lesson.sections.map((section) => (
-            <section key={section.id}>
+            <section key={section.id} data-section-id={section.id}>
               <h2 className="text-2xl font-bold leading-snug">{section.heading}</h2>
               {section.paragraphs.map((paragraph, index) => (
                 <p key={index} className="mt-3 text-lg">
