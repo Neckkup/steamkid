@@ -89,6 +89,31 @@ Rejected: *an agent merges on a later heartbeat* is Q1's rejected option restate
 makes the founder the throughput limit of the entire fleet, and it breaks the standing rule that we
 never hand a human work an agent could do.
 
+### Measured on PR #1: `--auto` fails open, and that is a hazard
+
+The flow in this ADR was exercised end-to-end before being prescribed. PR #1 — the first pull
+request ever opened on this repository — carried the documentation itself, which also answered a
+question nobody had checked: **agents can open pull requests.** The App holds `pull_requests: write`,
+so Stage B is feasible at all. That was worth confirming before making it mandatory, since Stage B
+is unimplementable if it is not true.
+
+It also surfaced something the design did not anticipate. `gh pr merge --squash --auto` **did not
+fail** on a repository with `allow_auto_merge: false`. It fell back to merging the pull request
+immediately, with no check having run, and reported success. Read back afterwards:
+`autoMergeRequest: null`, `state: MERGED`.
+
+This fails in the dangerous direction. An agent following the documented flow would believe it had
+armed a gated merge and would have merged unverified code to `main` instead. Two consequences, both
+now in `AGENTS.md`:
+
+- **The flag is not the confirmation.** Agents must read `autoMergeRequest` back and treat `null` as
+  a failure, exactly as we require a read-back for branch protection rather than trusting the
+  settings page. Same principle, same reason.
+- **The window closes once Stage B lands.** With required checks enforced, an immediate merge is
+  refused by GitHub, so the fallback becomes a loud failure rather than a silent one. That makes the
+  hazard *worst right now* — in the gap between documenting the flow and enforcing the checks —
+  which is precisely the period the fleet will be reading these instructions.
+
 ## Q3 — Required reviewers?
 
 **No.** ADR 0007 said they are meaningless with one human. That understated it: here they are

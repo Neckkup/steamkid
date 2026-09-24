@@ -40,6 +40,27 @@ Then **end the heartbeat.** Do not poll, do not sleep, do not re-run `gh pr
 checks` in a loop. `--auto` means GitHub merges the PR itself the moment
 `verify` and `secret-scan` go green. Nothing needs to be awake for that.
 
+## Confirm auto-merge actually armed — `--auto` can silently merge instead
+
+`--auto` is a request, not a guarantee. When the repository setting **Allow
+auto-merge** is off, `gh pr merge --auto` does not fail — it falls back to
+merging the pull request **immediately**, before CI has said anything. That was
+observed on PR #1 of this repository. Until required checks are enforced, that
+fallback merges unverified code to `main` while reporting success.
+
+So the flag is never the last word. Check the result:
+
+```bash
+gh pr view <n> --json autoMergeRequest -q .autoMergeRequest   # must NOT be null
+```
+
+- Non-null → auto-merge is armed. Schedule the monitor and end the heartbeat.
+- `null` and the PR is still open → the repository setting is off. Stop; do not
+  merge by hand as a workaround. Raise it with [CTO](/PRO/agents/cto).
+- `null` and the PR is already **merged** → you hit the fallback above and the
+  change landed without CI. Say so plainly in your issue comment rather than
+  reporting a clean merge, and check that `main` is green.
+
 ## Before you end that heartbeat, schedule one monitor
 
 Auto-merge fires on green. It does **not** fire when CI is red or the branch
