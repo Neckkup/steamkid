@@ -265,3 +265,33 @@ is no reason to leave it open longer than the founder's two clicks. Do them in o
    `protected: true`. Only that counts as Stage A being done — not a screenshot of the settings page.
 5. Delete `.github/workflows/main-guard.yml`. It exists only because we could not block the event; once we
    can, it is dead weight.
+
+### Execution record — PRO-121, measured 2026-09-24
+
+Step 1 of the order of operations landed; steps 3–5 did not. Measured against the GitHub API, not the
+settings UI:
+
+| Check | Endpoint | Result |
+| --- | --- | --- |
+| Repository is public | `GET /repos/Neckkup/steamkid` | `"visibility": "public"` — **done** |
+| `main` ruleset exists | `GET /repos/Neckkup/steamkid/rulesets` | `[]` — **not done** |
+| Rules applying to `main` | `GET /repos/Neckkup/steamkid/rules/branches/main` | `[]` — **not done** |
+| `main` is protected | `GET /repos/Neckkup/steamkid/branches/main` | `"protected": false` — **not done** |
+| Agent can create the ruleset | `POST /repos/Neckkup/steamkid/rulesets` | `403 Resource not accessible by integration` |
+
+The `administration` gate is therefore confirmed closed by measurement rather than inference: publishing
+removed the plan gate exactly as predicted, and the API now fails with a *permission* error instead of an
+*upgrade* error. The installation reports `permissions.admin: true` — that is the repository role of the
+account the App acts for, not a fine-grained App permission, and it does not open these endpoints. Secret
+scanning and Actions settings could not be read back either (`403` on
+`/secret-scanning/alerts` and `/actions/permissions`), so steps 1–2 of the order of operations remain
+unverified by us in either direction.
+
+**Consequence for `main-guard.yml`: it stays.** The ADR says to delete it "the day a real ruleset blocks
+non-fast-forward pushes", and that day has not arrived. Deleting it now would remove the only record of a
+force push during precisely the window in which `main` is world-readable *and* unprotected — the window
+this ADR argued should be kept short. It is short in clicks, not yet in elapsed time, and the guard is the
+only thing standing in it.
+
+The window is not more dangerous than it was while private: force pushing still requires write access,
+which visibility does not grant. What changed is that the cost of losing history is now paid in public.
