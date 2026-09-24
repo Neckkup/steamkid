@@ -8,7 +8,7 @@ import {
   type DeadLetterRecord,
 } from "@/lib/events/ingest";
 import { readLearnerCookie, resolveLearnerId } from "@/lib/events/learner";
-import { getBehaviourDb, resolveEventSink } from "@/lib/events/runtime";
+import { getBehaviourDb, isDbUnavailableError, resolveEventSink } from "@/lib/events/runtime";
 
 export const dynamic = "force-dynamic";
 
@@ -84,15 +84,23 @@ export async function POST(request: Request): Promise<Response> {
   const { accepted, rejected } = validateBatch(batch, receivedAt);
 
   const publicRef = readLearnerCookie(request.headers.get("cookie"));
-  const learnerId = publicRef ? await resolveLearnerId(db, publicRef) : null;
 
-  if (learnerId) {
-    const context = { learnerId, receivedAt };
-    await sink.accept(context, accepted);
-    if (rejected.length > 0) {
-      await sink.deadLetter(context, rejected);
+  try {
+    const learnerId = publicRef ? await resolveLearnerId(db, publicRef) : null;
+    if (learnerId) {
+      const context = { learnerId, receivedAt };
+      await sink.accept(context, accepted);
+      if (rejected.length > 0) {
+        await sink.deadLetter(context, rejected);
+      }
     }
+  } catch (err) {
+    if (isDbUnavailableError(err)) {
+      return NextResponse.json({ error: "event_store_unavailable" }, { status: 503 });
+    }
+    throw err;
   }
+
   if (rejected.length > 0) {
     logRejections(rejected);
   }
