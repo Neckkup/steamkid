@@ -110,7 +110,11 @@ nothing is left to wake for, and say who unblocks it.
 - **Repository settings are not yours to change — and not because of policy.**
   The Paperclip GitHub App does not declare the `administration` permission, so
   it can never be granted one. Branch protection, rulesets, auto-merge and
-  repository settings all answer `403` for every agent, permanently. If a task
+  repository settings all answer `403` for every agent, permanently. **The
+  Actions `GITHUB_TOKEN` is no way around this** — `administration` is not an
+  accepted key in a workflow's `permissions:` block at all, so a workflow that
+  asks for it is rejected before any job starts. Both credentials an agent can
+  reach have been measured; neither can ever hold it. If a task
   needs one of those, it needs the founder at the GitHub UI; do not spend a
   heartbeat re-testing the permission or asking for it to be granted. See ADR
   0008, Q5 — this has been measured on four separate tickets. To check the state
