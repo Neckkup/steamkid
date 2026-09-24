@@ -5,9 +5,16 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel superseded runs on a pull request — a new push there makes the old run
+# meaningless. Never cancel on `main`: that run is the only record that a given
+# commit of `main` was verified, and while merges land minutes apart (and while
+# `--auto` can still merge a PR before its checks answer — see ADR 0008), each
+# main push cancelled the one before it. Between 943ec98 and 61bcabd not one
+# main run survived to report, so no commit in that range has a green check
+# against it. Post-merge runs are cheap; an unverifiable `main` is not.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Least privilege for GITHUB_TOKEN, pinned here rather than left to the
 # repository's Actions setting — that setting reads 403 to our GitHub App
