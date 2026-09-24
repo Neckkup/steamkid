@@ -122,6 +122,18 @@ async function measure(page: Page) {
       return `${tag}${id}${cls}${text ? ` "${text}"` : ''}`
     }
 
+    /**
+     * The `sr-only` recipe deliberately collapses a box to 1x1 and clips it, so
+     * its text always "overflows" its client box. Reporting that as clipped
+     * text points at the one fix that is actually wrong — deleting the
+     * screen-reader label, PRO-128. Nothing painted, nothing to clip.
+     */
+    const screenReaderOnly = (el: Element) => {
+      if (el.classList.contains('sr-only')) return true
+      const s = getComputedStyle(el)
+      return (s.clipPath !== 'none' || s.clip !== 'auto') && el.clientWidth <= 1
+    }
+
     for (const el of Array.from(document.body.querySelectorAll('*'))) {
       const box = el.getBoundingClientRect()
       if (box.width === 0 && box.height === 0) continue
@@ -134,7 +146,12 @@ async function measure(page: Page) {
       // scrollWidth beyond clientWidth on a non-scrollable box means text is cut off.
       const style = getComputedStyle(el)
       const scrollable = style.overflowX === 'auto' || style.overflowX === 'scroll'
-      if (!scrollable && el.scrollWidth > el.clientWidth + 1 && el.clientWidth > 0) {
+      if (
+        !scrollable &&
+        !screenReaderOnly(el) &&
+        el.scrollWidth > el.clientWidth + 1 &&
+        el.clientWidth > 0
+      ) {
         clipped.push(`${describe(el)} (scrollWidth=${el.scrollWidth} > ${el.clientWidth})`)
       }
 
