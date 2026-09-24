@@ -6,8 +6,9 @@ import { ActiveSpan } from "@/lib/events/activity";
 import { useTracking } from "@/lib/events/client/tracking-provider";
 
 /**
- * The reading half of the behaviour pipe: `lesson.opened`, the four scroll
- * thresholds, and `lesson.closed`.
+ * The reading half of the behaviour pipe: `lesson.opened`, `lesson.section_dwell`
+ * for each section that receives attention, the four scroll thresholds, and
+ * `lesson.closed`.
  *
  * A component rather than something each lesson page remembers to call, because
  * "the page shipped without its events" is the failure mode PRO-6 calls
@@ -21,9 +22,11 @@ import { useTracking } from "@/lib/events/client/tracking-provider";
 export function LessonTracker({
   lessonId,
   contentVersion,
+  skillTags,
 }: {
   readonly lessonId: string;
   readonly contentVersion: number;
+  readonly skillTags: readonly string[];
 }) {
   const { track, clock } = useTracking();
 
@@ -84,9 +87,64 @@ export function LessonTracker({
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
 
+    // Section dwell tracking: `lesson.section_dwell` fires when a section
+    // that was at least half-visible leaves the viewport, or when the lesson
+    // closes. `active_ms` is the delta from the shared clock so a reader who
+    // walks away from their desk mid-section is not credited with study time.
+    const sectionEnteredActiveMs = new Map<string, number>();
+
+    const sectionObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const sectionId = (entry.target as HTMLElement).dataset.sectionId;
+          if (!sectionId) continue;
+          const now = Date.now();
+          if (entry.isIntersecting) {
+            sectionEnteredActiveMs.set(sectionId, span.activeMs(now));
+          } else {
+            const enteredActiveMs = sectionEnteredActiveMs.get(sectionId);
+            if (enteredActiveMs !== undefined) {
+              emit(
+                "lesson.section_dwell",
+                {
+                  lesson_id: lessonId,
+                  section_id: sectionId,
+                  active_ms: Math.round(span.activeMs(now) - enteredActiveMs),
+                  skill_tags: [...skillTags],
+                },
+                { lesson_id: lessonId },
+              );
+              sectionEnteredActiveMs.delete(sectionId);
+            }
+          }
+        }
+      },
+      { threshold: 0.5 },
+    );
+
+    document.querySelectorAll<HTMLElement>("[data-section-id]").forEach((el) => {
+      sectionObserver.observe(el);
+    });
+
     return () => {
       window.removeEventListener("scroll", onScroll);
+      sectionObserver.disconnect();
+
+      // Flush dwell for any sections still in view when the lesson closes.
       const now = Date.now();
+      for (const [sectionId, enteredActiveMs] of sectionEnteredActiveMs) {
+        emit(
+          "lesson.section_dwell",
+          {
+            lesson_id: lessonId,
+            section_id: sectionId,
+            active_ms: Math.round(span.activeMs(now) - enteredActiveMs),
+            skill_tags: [...skillTags],
+          },
+          { lesson_id: lessonId },
+        );
+      }
+
       emit(
         "lesson.closed",
         {
@@ -101,7 +159,7 @@ export function LessonTracker({
         { lesson_id: lessonId },
       );
     };
-  }, [clock, lessonId, contentVersion]);
+  }, [clock, lessonId, contentVersion, skillTags]);
 
   return null;
 }
