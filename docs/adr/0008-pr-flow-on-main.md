@@ -165,6 +165,33 @@ Consequences now in `AGENTS.md`:
 - **Stage B step 2 stopped being hygiene.** It is the only thing standing between the flow this ADR
   prescribes and unverified code on `main`.
 
+### Q2a — the `main` push run was being cancelled too (PRO-130)
+
+The paragraph above says the push run on `main` is the last check a merged commit gets. On
+2026-09-24 it was getting none: `.github/workflows/ci.yml` set `cancel-in-progress: true` on
+`concurrency.group: ci-${{ github.ref }}`, and that group covers `refs/heads/main`. Each merge
+cancelled the run belonging to the previous one. Runs `35961205134` and `35961231259` were both
+cancelled that way, and **no commit between `943ec98` and `61bcabd` ever produced a CI result of its
+own.** The two failures compound: `--auto` merged before CI answered, and then the push run that
+would have caught it was killed by the next merge.
+
+Fixed by making the cancellation conditional:
+
+```yaml
+cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+```
+
+Superseded PR runs are still cancelled — nobody needs a result for a commit that has been pushed
+over. Runs on `main` now always finish. The cost is one extra concurrent job per merge, which is
+free on a public repository (Actions minutes are unmetered, ADR 0007).
+
+Rejected alternative: drop `concurrency` entirely. That would also stop cancelling `main`, but it
+gives up cancellation on PR branches, where rapid pushes are normal and the stale result is
+genuinely worthless. The conditional keeps the behaviour that was wanted and removes only the one
+that was destroying evidence.
+
+If we are wrong, the migration cost is one line.
+
 ## Q3 — Required reviewers?
 
 **No.** ADR 0007 said they are meaningless with one human. That understated it: here they are
