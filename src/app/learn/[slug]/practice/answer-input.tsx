@@ -77,7 +77,14 @@ export function AnswerInput({
           return (
             <label
               key={choice.id}
-              className={`tap flex cursor-pointer items-center gap-3 rounded-2xl border-2 p-4 text-lg transition-colors ${
+              /*
+               * The whole row is the tap target, and it is the *input* that
+               * covers it: a 24px radio next to a big label still measures 24px
+               * to a finger aiming at the dot, and PRO-128 caught exactly that.
+               * The native control is stretched over the row and made
+               * transparent; the circle beside the text is decoration.
+               */
+              className={`tap relative flex cursor-pointer items-center gap-3 rounded-2xl border-2 p-4 text-lg transition-colors has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-brand ${
                 selected
                   ? "border-brand bg-brand-soft font-semibold"
                   : "border-line bg-surface hover:border-brand"
@@ -86,10 +93,18 @@ export function AnswerInput({
               <input
                 type="radio"
                 name={`item-${item.id}`}
-                className="size-6 shrink-0 accent-[var(--brand)]"
+                className="absolute inset-0 m-0 size-full cursor-pointer appearance-none rounded-2xl opacity-0"
                 checked={selected}
                 onChange={() => onChange({ type: "mcq", choiceId: choice.id })}
               />
+              <span
+                aria-hidden="true"
+                className={`flex size-7 shrink-0 items-center justify-center rounded-full border-2 bg-surface ${
+                  selected ? "border-brand" : "border-line"
+                }`}
+              >
+                {selected ? <span className="size-3.5 rounded-full bg-brand" /> : null}
+              </span>
               <span>{choice.label}</span>
             </label>
           );
