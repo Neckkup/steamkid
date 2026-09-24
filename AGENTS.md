@@ -123,6 +123,18 @@ rather than an error. Observed on PRO-123. If a pull request is still in flight,
 the issue is not blocked; leave it `in_review`. Only mark it `blocked` once
 nothing is left to wake for, and say who unblocks it.
 
+**A monitor watches CI. It does not watch a human.** The monitor above exists
+because a CI run finishes on its own schedule and nothing tells you when. A
+founder clicking a checkbox is the opposite: it has no schedule, and Paperclip
+*does* tell you when. If what you are waiting for is a person, the wake path is
+an issue interaction with `continuationPolicy: "wake_assignee"` — a
+`request_confirmation` card wakes you on the click and on the decline, exactly
+once each. Measured on PRO-123: the Stage B monitor fired eight times across
+eight heartbeats and read the same `enforcement_level=off` every time, because a
+15-minute timer cannot make a person faster. Re-stating the ask in a ninth
+comment does not either. Post the card, leave the issue `in_review`, and let the
+card be the only thing that brings you back.
+
 ## Rules that are not negotiable
 
 - **Branch off current `main`.** `git fetch origin && git switch -c <branch> origin/main`.
