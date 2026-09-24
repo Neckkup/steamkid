@@ -34,11 +34,16 @@ exists only to catch the case where GitHub will never act.
    rather than by someone asking repeatedly whether it has.
 2. **An issue monitor is the backstop, and only the backstop.** Auto-merge never fires on a red
    check or a conflicting branch; the PR simply sits, and the work silently never lands. So the
-   same heartbeat schedules one `github_pr` monitor (`nextCheckAt` +15m, `timeoutAt` +2h,
+   same heartbeat schedules one monitor (`kind: "external_service"`, `serviceName:
+   "github-actions"`, `externalRef` = the PR url, `nextCheckAt` +15m, `timeoutAt` +2h,
    `maxAttempts` 4) whose job is to notice failure. When auto-merge has already done its work, the
    wake finds the PR merged, clears the monitor and closes the ticket.
 
 The exact payload is in the repository's `AGENTS.md`, which is where agents will actually look.
+`external_service` is the only accepted `kind`; a descriptive value like `github_pr` is rejected
+with a `400`, and the pull request being watched belongs in `externalRef`. This was found by
+scheduling the real monitor for this ticket rather than by reading the schema, which is the reason
+the payload in `AGENTS.md` is a verified one rather than a plausible one.
 
 ### Rejected
 
@@ -88,6 +93,31 @@ expensive half of Stage B with none of the mitigation. The two settings are one 
 Rejected: *an agent merges on a later heartbeat* is Q1's rejected option restated. *A human merges*
 makes the founder the throughput limit of the entire fleet, and it breaks the standing rule that we
 never hand a human work an agent could do.
+
+### Measured on PR #1: `--auto` fails open, and that is a hazard
+
+The flow in this ADR was exercised end-to-end before being prescribed. PR #1 — the first pull
+request ever opened on this repository — carried the documentation itself, which also answered a
+question nobody had checked: **agents can open pull requests.** The App holds `pull_requests: write`,
+so Stage B is feasible at all. That was worth confirming before making it mandatory, since Stage B
+is unimplementable if it is not true.
+
+It also surfaced something the design did not anticipate. `gh pr merge --squash --auto` **did not
+fail** on a repository with `allow_auto_merge: false`. It fell back to merging the pull request
+immediately, with no check having run, and reported success. Read back afterwards:
+`autoMergeRequest: null`, `state: MERGED`.
+
+This fails in the dangerous direction. An agent following the documented flow would believe it had
+armed a gated merge and would have merged unverified code to `main` instead. Two consequences, both
+now in `AGENTS.md`:
+
+- **The flag is not the confirmation.** Agents must read `autoMergeRequest` back and treat `null` as
+  a failure, exactly as we require a read-back for branch protection rather than trusting the
+  settings page. Same principle, same reason.
+- **The window closes once Stage B lands.** With required checks enforced, an immediate merge is
+  refused by GitHub, so the fallback becomes a loud failure rather than a silent one. That makes the
+  hazard *worst right now* — in the gap between documenting the flow and enforcing the checks —
+  which is precisely the period the fleet will be reading these instructions.
 
 ## Q3 — Required reviewers?
 
