@@ -119,6 +119,27 @@ now in `AGENTS.md`:
   hazard *worst right now* — in the gap between documenting the flow and enforcing the checks —
   which is precisely the period the fleet will be reading these instructions.
 
+### Step 1 landed: `allow_auto_merge` is `true` as of 2026-09-24
+
+The table above is now history. The founder ticked **Allow auto-merge**, and two independent reads
+agree:
+
+| Read | Before | After |
+| --- | --- | --- |
+| `GET /repos/Neckkup/steamkid` → `allow_auto_merge` | `false` | **`true`** |
+| GraphQL `repository.autoMergeAllowed` | `false` | **`true`** |
+| `GET /branches/main` → `enforcement_level` | `off` | `off` — step 2 still pending |
+
+`delete_branch_on_merge` is still `false`. It is hygiene, not a gate: `gh pr merge --delete-branch`
+deletes the head branch per pull request, so none of the five commands depend on it.
+
+The half of the hazard above that belonged to `allow_auto_merge: false` should now be gone — with
+the setting on, `--auto` has a real auto-merge request to create and no longer has an immediate
+merge to fall back to. That is a prediction, not yet a measurement, so the pull request carrying
+this section is the test: arm `--auto`, read `autoMergeRequest` back, and record the value on
+PRO-123. **The read-back rule stays regardless of the answer**, because `autoMergeRequest: null` is
+still the only thing that separates an armed merge from a completed one.
+
 ## Q3 — Required reviewers?
 
 **No.** ADR 0007 said they are meaningless with one human. That understated it: here they are
@@ -262,6 +283,25 @@ agent can reach on this stack have now been measured against the same API and bo
 incapable of it. Treat repository administration as outside the agent boundary and stop probing;
 the next heartbeat that suspects otherwise should read this table instead of spending CI on it.
 
+### "But the founder is an admin" is a trap, not a lead
+
+GraphQL `repository.viewerPermission` reads **`ADMIN`** for the token agents hold, which looks like
+a contradiction sitting next to four tickets of `403`. It is not one, and the distinction is worth
+writing down before someone re-opens the question on the strength of that word.
+
+The token is a GitHub App **user-to-server** token — `gh auth status` shows a `ghu_` prefix. It acts
+on behalf of a user who is genuinely a repository admin, but it is still bounded by the
+intersection of that user's role and the App's declared permissions. `viewerPermission` reports only
+the first half. GitHub names the second half in the error itself:
+
+```
+GET /repos/Neckkup/steamkid/branches/main/protection
+403  {"message": "Resource not accessible by integration"}
+```
+
+*by integration* — not "forbidden for this user". Read `viewerPermission: ADMIN` as a statement
+about the human and nothing else.
+
 ## A better read-back than Stage A had
 
 Stage A could not verify its own mandatory condition, because "do not allow bypassing" lives behind
@@ -327,6 +367,28 @@ Check context names were verified rather than assumed, against commit `441a9c8`:
 `GET /repos/Neckkup/steamkid/commits/441a9c8/check-runs` returns exactly `verify` and `secret-scan`,
 both from the `github-actions` app. Those two strings are what goes in the required list; a typo
 here produces a branch that can never merge anything.
+
+### An accepted confirmation card is not a measurement
+
+The request for the two settings eventually went to the founder as a Paperclip confirmation card,
+after the same request had been prose in a thread four times. The card came back **accepted** at
+`05:39:41Z`. The first read afterwards, at roughly `05:41Z`, showed all three Stage B values
+unchanged. A second read at `05:44:36Z` showed `allow_auto_merge` had flipped to `true`.
+
+Nothing was wrong. The founder was clicking while the heartbeat ran. But a heartbeat that treated
+the first read as the result would have written down "the founder pressed yes and changed nothing" —
+accusing a human of skipping work they were doing at that moment, in a thread they read. The card's
+`accepted` and the settings page are two facts separated by however long the clicking takes, and
+neither is evidence for the other:
+
+- **`accepted` means intent, not state.** It is the signal to start reading, never a substitute for
+  the read.
+- **One read is a sample, not a result,** when a human is changing the thing in real time. Re-read
+  before writing a conclusion about a person.
+
+This is the same rule the rest of this ADR applies to GitHub's own claims — `--auto` reporting
+success, a settings page asserting a rule — extended to the one signal that felt trustworthy
+precisely because a human produced it.
 
 ## Order of operations
 
