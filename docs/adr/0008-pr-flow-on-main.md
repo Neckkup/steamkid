@@ -135,10 +135,51 @@ deletes the head branch per pull request, so none of the five commands depend on
 
 The half of the hazard above that belonged to `allow_auto_merge: false` should now be gone — with
 the setting on, `--auto` has a real auto-merge request to create and no longer has an immediate
-merge to fall back to. That is a prediction, not yet a measurement, so the pull request carrying
-this section is the test: arm `--auto`, read `autoMergeRequest` back, and record the value on
-PRO-123. **The read-back rule stays regardless of the answer**, because `autoMergeRequest: null` is
-still the only thing that separates an armed merge from a completed one.
+merge to fall back to. That was a prediction, not a measurement, so the pull request carrying this
+section was made the test. It failed.
+
+### The prediction was wrong: `--auto` still fails open with the setting on
+
+PR #13 carried the paragraph above. On a repository with `allow_auto_merge: true`:
+
+```
+$ gh pr merge 13 --squash --auto --delete-branch
+$ gh pr view 13 --json state,autoMergeRequest
+{ "state": "MERGED", "autoMergeRequest": null }
+$ gh run list --branch main --limit 1
+CI  pending  6c59933
+```
+
+Merged on the spot, with `main`'s own CI for that commit still queued. Byte for byte the PR #1
+behaviour, on the configuration that was supposed to have fixed it.
+
+PRO-129 saw the same instant merge and the same `null` on PR #12 and read it as benign, because
+both checks happened to be green already. That reading is right for PR #12 and wrong as a rule:
+PR #13 shows the instant merge does not depend on the checks having passed. Green was a coincidence
+of timing, not a precondition.
+
+**The repository setting was never the cause.** GitHub creates an auto-merge request only for a pull
+request that is *currently blocked* from merging — that is what auto-merge is for. `main` has no
+required status checks, so pending checks block nothing and a freshly opened PR is already
+mergeable; there is no queue to join, and `--auto` collapses into a plain merge. `allow_auto_merge`
+controls whether the mechanism *exists*, not whether this PR needs it.
+
+Three consequences, and the first one is the expensive one:
+
+- **The dangerous window does not close until step 2.** Q2's earlier text located the hazard in
+  `allow_auto_merge: false` and implied step 1 would end it. It does not. Every `--auto` between now
+  and the required checks landing merges unverified code to `main` while reporting success, and the
+  fleet is following these instructions during exactly that window. `AGENTS.md` now says so where
+  the five commands are, and tells agents to leave the PR open and merge on the monitor wake
+  instead.
+- **The ordering rationale survives intact.** Auto-merge still has to precede required checks, for
+  the reason given above: without it there is no non-polling way to land a change once direct pushes
+  stop working. Step 1 was necessary and is done. It was simply not sufficient, and this ADR said
+  otherwise for one commit.
+- **The read-back rule is vindicated, not weakened.** `autoMergeRequest: null` was the only thing
+  that distinguished "armed" from "already merged" here, and reading it is what caught a paragraph
+  in this ADR that was wrong. `state` belongs in the same read: `null` + `OPEN` and `null` +
+  `MERGED` are different situations with different next actions.
 
 ## Q3 — Required reviewers?
 

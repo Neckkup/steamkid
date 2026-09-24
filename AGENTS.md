@@ -42,35 +42,42 @@ checks` in a loop. `--auto` means GitHub merges the PR itself the moment
 
 ## Confirm auto-merge actually armed — `--auto` can silently merge instead
 
-**As of 2026-09-24 that setting is on** — the founder ticked **Allow auto-merge**
-and `npm run verify:stage-b` now reads `autoMergeAllowed=true`, so the last of
-the five commands above does what it says. This line was `false` earlier the
-same day (PRO-129); it is a measurement with a date on it, so run the verifier
-rather than trusting the sentence you are reading.
+**Today, on this repository, `--auto` still merges instantly without waiting for
+CI.** `Allow auto-merge` is on as of 2026-09-24 — `npm run verify:stage-b` reads
+`autoMergeAllowed=true` — and it did **not** fix this. Measured on PR #13: with
+the setting on, `gh pr merge --squash --auto` merged the pull request on the
+spot, `autoMergeRequest` read back `null`, and `main`'s CI for that commit was
+still `pending` afterwards.
 
-`--auto` is a request, not a guarantee. When the repository setting **Allow
-auto-merge** is off, `gh pr merge --auto` does not fail — it falls back to
-merging the pull request **immediately**, before CI has said anything. That was
-observed on PR #1 of this repository. Until required checks are enforced, that
-fallback merges unverified code to `main` while reporting success.
+The cause is not the repository setting. **GitHub only creates an auto-merge
+request for a pull request that is currently blocked from merging.** With no
+required status checks on `main`, a freshly opened PR is already mergeable —
+pending checks do not block when nothing requires them — so there is nothing to
+queue and `--auto` degrades to a plain merge. Step 1 was necessary and is done;
+**the fail-open behaviour closes with step 2, the required checks, not before**
+(PRO-123, [ADR 0008](docs/adr/0008-pr-flow-on-main.md) Q2).
 
-So the flag is never the last word. Check the result:
+So until `npm run verify:stage-b` passes, **do not use `--auto` for anything you
+would not want on `main` unverified.** Open the PR, leave it, schedule the
+monitor below, and merge on the wake once both checks are green.
+
+Either way the flag is never the last word. Check the result:
 
 ```bash
-gh pr view <n> --json autoMergeRequest -q .autoMergeRequest   # must NOT be null
+gh pr view <n> --json state,autoMergeRequest -q '[.state,.autoMergeRequest]'
 ```
 
-- Non-null → auto-merge is armed. Schedule the monitor and end the heartbeat.
-- `null` and the PR is still open → the repository setting is off. Stop; do not
-  merge by hand as a workaround. Raise it with [CTO](/PRO/agents/cto).
-- `null` and the PR is already **merged** → GitHub had nothing left to wait for
-  and merged on the spot. With the setting on, that is the benign case *only if*
-  both checks were already green when you armed it; if they were not, the change
-  landed without CI. Either way, say which it was in your issue comment rather
-  than reporting a clean armed merge, and check that `main` is green. Do not read
-  a merged PR as proof the setting is off — measured on PR #12 with
-  `autoMergeAllowed=true` and both checks already green, `--auto` merged
-  immediately and reported `autoMergeRequest: null` (PRO-129).
+- Non-null and `OPEN` → auto-merge is armed. Schedule the monitor and end the
+  heartbeat.
+- `null` and still `OPEN` → nothing is armed and nothing merged. Schedule the
+  monitor and merge on the wake; do not loop on `gh pr checks`. **Do not read
+  this as the repository setting being off** — that diagnosis was in this list
+  and was wrong (PRO-129).
+- `null` and already `MERGED` → GitHub had nothing left to wait for and merged on
+  the spot. Benign *only if* both checks were already green when you armed it,
+  which is what PR #12 saw; if they were not, the change landed without CI, which
+  is what PR #13 saw. Say which of the two it was in your issue comment rather
+  than reporting a clean armed merge, and check that `main` is green.
 
 ## Before you end that heartbeat, schedule one monitor
 
