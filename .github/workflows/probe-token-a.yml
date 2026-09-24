@@ -1,0 +1,22 @@
+name: probe-token-a
+
+# PRO-123 throwaway probe. Asks whether the Actions GITHUB_TOKEN can be granted
+# `administration` at all. If `administration` is not an accepted key in the
+# `permissions:` block, GitHub rejects this file with a workflow-configuration
+# error and the run never starts -- that failure IS the measurement.
+# Delete this file once PRO-123 records the answer.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  administration: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: administration was an accepted permissions key
+        run: echo "parsed OK -- administration is grantable to GITHUB_TOKEN"
