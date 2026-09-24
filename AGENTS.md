@@ -29,67 +29,53 @@ below: you open the PR, hand the waiting to GitHub, and end the run.
 ## The five commands
 
 ```bash
-git switch -c pro-123-short-slug          # branch name: <ticket>-<slug>
+git fetch origin && git switch -c pro-123-short-slug origin/main
 git commit -m "Imperative summary (PRO-123)"
 git push -u origin HEAD
-gh pr create --fill                        # title ends with the ticket id
-# gh pr merge --squash --auto --delete-branch  <- NOT YET. See the section below.
+gh pr create --fill                          # title ends with the ticket id
+gh pr merge --squash --auto --delete-branch  # then read the result back, below
 ```
 
-Then schedule the monitor below and **end the heartbeat.** Do not poll, do not
-sleep, do not re-run `gh pr checks` in a loop.
+Then **end the heartbeat.** Do not poll, do not sleep, do not re-run
+`gh pr checks` in a loop.
 
-**The fifth command is suspended until Stage B step 2 lands.** `--auto` is
-supposed to hand the waiting to GitHub. On this repository today it does not: it
-merges immediately, before CI has finished. Measured twice, most recently on
-PR #14 on 2026-09-24 with `autoMergeAllowed=true` — armed while `verify` was
-still `IN_PROGRESS`, and the pull request was on `main` seconds later with
-`autoMergeRequest: null`. Turning the repository setting on was necessary and did
-not fix this. **What gates a merge is required status checks, and those are still
-`off`** (`npm run verify:stage-b`). Until that verifier reports Stage B on, open
-the PR, schedule the monitor, and merge by hand on green.
+## `--auto` gates now — Stage B landed 2026-09-24
 
-## `--auto` merges now, not on green — why the fifth command is suspended
+The fifth command was suspended for most of this repository's life, because
+`--auto` merged on the spot instead of on green. It was never the flag's fault.
+GitHub only has something to wait for when a pull request is **blocked**, and
+until `main` had required status checks, nothing blocked anything: `--auto`
+found an already-mergeable PR, merged it, and reported success.
 
-**Allow auto-merge is on** as of 2026-09-24; the founder ticked it and
-`npm run verify:stage-b` reads `autoMergeAllowed=true`. That fixed the setting
-and did **not** fix the behaviour.
+| PR | `autoMergeAllowed` | Required checks on `main` | Checks when armed | Result |
+| --- | --- | --- | --- | --- |
+| #1 | `false` | none | pending | merged immediately, `autoMergeRequest: null` |
+| #12 | `true` | none | both green | merged immediately, `autoMergeRequest: null` |
+| #14 | `true` | none | `verify` **in progress** | merged immediately, `autoMergeRequest: null` |
+| #24 | `true` | `verify` + `secret-scan` | `verify` in progress | **queued** — `autoMergeRequest` non-null |
 
-`--auto` is a request, not a guarantee. GitHub only has something to wait for
-when a pull request is *blocked* — and with no required status checks configured,
-nothing blocks it, so `--auto` merges on the spot and reports success:
+Required status checks are now on (`enforcement_level=everyone`, contexts
+`verify` and `secret-scan`, bypass bound to everyone including the owner). That
+is what makes a merge wait, so the fifth command does what it always claimed to.
 
-| PR | `autoMergeAllowed` | Checks when armed | Result |
-| --- | --- | --- | --- |
-| #1 | `false` | pending | merged immediately, `autoMergeRequest: null` |
-| #12 | `true` | both green | merged immediately, `autoMergeRequest: null` |
-| #14 | `true` | `verify` **in progress** | merged immediately, `autoMergeRequest: null` |
-
-PR #14 is the one that settles it: the setting was on, CI had not finished, and
-the change was on `main` anyway. Required status checks — Stage B step 2, still
-`enforcement_level=off` — are the thing that makes a merge wait. The repository
-setting only makes a *gated* merge expressible once something does the gating.
-
-So the flag is never the last word. Check the result:
+**Still read the result back.** A flag is a request, not a receipt:
 
 ```bash
 gh pr view <n> --json autoMergeRequest -q .autoMergeRequest   # must NOT be null
 ```
 
-- Non-null → auto-merge is armed. Schedule the monitor and end the heartbeat.
-- `null` and the PR is still open → auto-merge did not arm and nothing will
-  merge it. Schedule the monitor and merge by hand on green.
-- `null` and the PR is already **merged** → you hit the fail-open path in the
-  table above. Say so plainly in your issue comment rather than reporting a clean
-  armed merge, check whether both checks were green at merge time, and check that
-  `main` is green now. This is the outcome you avoid by not running `--auto`.
+- Non-null → auto-merge is armed. End the heartbeat; GitHub does the waiting.
+- `null` and the PR is still open → it did not arm. Schedule the monitor below
+  and merge by hand on green.
+- `null` and the PR is already **merged** → you hit the old fail-open path. Say
+  so plainly in your issue comment rather than reporting a clean armed merge,
+  check whether both checks were green at merge time, and check `main` is green.
 
-## Before you end that heartbeat, schedule one monitor
+## When a PR stalls, schedule one monitor
 
-Nothing merges your PR while you are asleep — not until Stage B lands and
-`--auto` becomes usable. The monitor is what brings you back to merge it. The
-same heartbeat that opens the PR schedules a single issue monitor, and that
-monitor is the only thing that ever re-checks:
+Auto-merge does the waiting on the happy path. It does **not** fire when CI goes
+red — the PR then sits open forever with nobody watching. The monitor is the
+backstop for that case, and for any PR you had to merge by hand:
 
 ```jsonc
 PATCH /api/issues/{issueId}
