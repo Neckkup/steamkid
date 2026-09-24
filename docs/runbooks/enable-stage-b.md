@@ -75,6 +75,16 @@ The two names are the `jobs:` keys in `.github/workflows/ci.yml`. A typo does no
 fail loudly: GitHub will wait forever for a check that will never report, and
 `main` becomes unmergeable by anyone.
 
+**If the UI takes you to `Settings` → `Rules` → `Rulesets` instead, that is fine.**
+GitHub has two branch-rule systems and steers different accounts to different
+ones; a `required_status_checks` rule in a ruleset targeting `main` enforces the
+same thing. `verify:stage-b` reads both places, so either route verifies. Two
+differences worth knowing before you pick: a ruleset exposes **Require branches
+to be up to date** to us (one fewer thing to prove by experiment), and it spells
+"Do not allow bypassing" as an empty **Bypass list** that we cannot read back —
+so under a ruleset the push test in §5 is the only evidence that the rule binds
+the owner.
+
 ### สำหรับผู้ก่อตั้ง — สองที่ ตามลำดับนี้
 
 1. `Settings` → `General` → **Pull Requests** → ติ๊ก **Allow auto-merge**
@@ -94,19 +104,27 @@ fail loudly: GitHub will wait forever for a check that will never report, and
 npm run verify:stage-b
 ```
 
-Exit code 0 and four `PASS` lines is the whole check. It reads
-`GET /repos/Neckkup/steamkid/branches/main`, which needs only `contents:read`, so
-any agent can run it without the permission we do not have.
+Exit code 0 is the whole check; anything it cannot read prints `UNK` and is
+excluded from the score rather than guessed at. It reads
+`GET /repos/Neckkup/steamkid/branches/main` **and**
+`GET /repos/Neckkup/steamkid/rules/branches/main`, both of which need only
+`contents:read`, so any agent can run it without the permission we do not have.
+
+Reading both is not belt-and-braces. Required checks set in a ruleset are absent
+from the classic payload entirely, so a checker that read only the classic shape
+would report `enforcement_level=off` — "the founder has not ticked anything" —
+about a `main` that was already refusing merges. The header line names which
+source the answers came from.
 
 What it can see, and what it cannot:
 
-| Condition | How it is proven |
-| --- | --- |
-| `main` is protected | readable — `protected`, `protection.enabled` |
-| required checks are enforced | readable — `enforcement_level` is not `off` |
-| the bypass list is empty | readable — `enforcement_level` is `everyone`, not `non_admins` |
-| exactly `verify` + `secret-scan` | readable — `contexts` |
-| **strict** (up to date before merging) | **not readable** — see §5 |
+| Condition | classic branch protection | ruleset |
+| --- | --- | --- |
+| `main` is protected | readable — `protected`, `protection.enabled` | same (Stage A is classic either way) |
+| required checks are enforced | readable — `enforcement_level` is not `off` | readable — the rule is present |
+| the bypass list is empty | readable — `enforcement_level` is `everyone`, not `non_admins` | **not readable** — see §5 |
+| exactly `verify` + `secret-scan` | readable — `contexts` | readable — `parameters.required_status_checks` |
+| **strict** (up to date before merging) | **not readable** — see §5 | readable — `strict_required_status_checks_policy` |
 
 `enforcement_level` is the one worth knowing about. It is not a duplicate of
 `enabled`; it records *who* the checks bind, and `everyone` is how the legacy
@@ -146,3 +164,5 @@ ADR 0008 treats this as reversible and Stage A as the one that mattered.
 | Date | Event |
 | --- | --- |
 | 2026-09-24 | Runbook written; `verify:stage-b` reads 1/4, Stage A only. Waiting on the founder. |
+| 2026-09-24 | Step 1 (auto-merge) ticked; `verify:stage-b` reads 3/6. Step 2 still open. |
+| 2026-09-24 | Verifier now reads rulesets as well as classic protection. Measured `GET /rules/branches/main` = `200 []`, so step 2 has not been done by either route. |
