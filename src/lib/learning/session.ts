@@ -17,8 +17,9 @@
  * back a value that leaked into client JavaScript in the meantime.
  */
 
-import { randomUUID } from "node:crypto";
 import { cookies } from "next/headers";
+
+import { uuidv7 } from "@/lib/ids";
 
 import { getLearningStore, type ConsentState } from "./store";
 
@@ -44,7 +45,16 @@ export async function ensureLearnerRef(): Promise<string> {
   const existing = store.get(LEARNER_COOKIE)?.value;
   if (existing) return existing;
 
-  const learnerRef = randomUUID();
+  /**
+   * UUIDv7, not v4 (PRO-115).
+   *
+   * The cookie holds `app.learner.public_ref`, and that column carries
+   * `CHECK (app.is_uuidv7(public_ref))`. A v4 ref can therefore never match a
+   * learner row, which silently made every consent, verdict and behaviour
+   * lookup keyed on it resolve to "no such learner" — fail-closed, so nothing
+   * broke loudly, but nothing worked either.
+   */
+  const learnerRef = uuidv7();
   store.set(LEARNER_COOKIE, learnerRef, {
     httpOnly: true,
     sameSite: "lax",

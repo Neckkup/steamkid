@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { z } from "zod";
 
 import { getItemById, isWrittenItem } from "@/content";
+import { gradeForRequest } from "@/lib/learning/grade-request";
 import { gradeItem, isClosedItem, type ItemAnswer } from "@/lib/learning/grade";
 import { ensureLearnerRef, getConsentState, hasScope } from "@/lib/learning/session";
 import { getLearningStore } from "@/lib/learning/store";
@@ -34,15 +35,32 @@ const body = z.object({
   activeTimeOnItemMs: z.number().int().min(0).max(24 * 60 * 60 * 1000),
   answerChanges: z.number().int().min(0).max(10_000),
   hintsUsed: z.number().int().min(0).max(20),
+  /**
+   * `events.session.id` — the id the client already puts on every behaviour
+   * event. Optional because the practice screen does not send it yet; when it
+   * does, one sitting groups as one Langfuse session instead of a row of
+   * unrelated grading traces.
+   */
+  sessionId: z.uuid().nullish(),
 });
 
 /**
  * `POST /api/attempts` — one answer to one exercise item.
  *
  * Grading happens here rather than in the browser for the obvious reason: the
- * correct answer must not be in a bundle a child can read. The response carries
- * the result and the explanation, and for written items it carries
- * `pending_ai` — the honest state until PRO-8 exists — never a made-up score.
+ * correct answer must not be in a bundle a child can read. A closed item is
+ * graded by `gradeItem`; a written one goes to the AI grader through
+ * `gradeForRequest` (PRO-115), which stores a verdict before it returns one.
+ *
+ * Four statuses, and the difference between them matters:
+ *
+ * - `graded` — a score exists, from the deterministic grader or from the AI.
+ * - `awaiting_teacher` — the model refused or could not judge it. A verdict row
+ *   exists with no score and the work is in the teacher queue. Never a zero.
+ * - `pending_ai` — nothing was graded, and `pendingReason` says why (no
+ *   consent, the kill switch, no learner row, a timeout, a failure). The
+ *   child's answer is stored either way.
+ * - `403 consent_required` — there is no consent record at all.
  *
  * The `attempt_id` and `correlation_id` in the response are the ones the client
  * puts in `item.answer_submitted` and `item.result_shown`, so a behaviour event
@@ -123,17 +141,68 @@ export async function POST(request: Request): Promise<Response> {
   });
 
   if (outcome.status === "pending_ai") {
+    /**
+     * The written path (PRO-115). The attempt is already stored above, so the
+     * child's work survives whatever the grader does next, and every failure
+     * inside `gradeForRequest` comes back as `pending_ai` with a reason — the
+     * same response this endpoint gave before the grader was connected.
+     */
+    const graded =
+      isWrittenItem(item) && answer.type === "text"
+        ? await gradeForRequest({
+            item,
+            submissionText: answer.text,
+            learnerRef,
+            consent,
+            correlationId,
+            subjectType: "attempt",
+            subjectId: attemptId,
+            attemptNumber: attemptNo,
+            lessonId: lesson.id,
+            sessionId: parsed.data.sessionId ?? undefined,
+            scheduleAfterResponse: after,
+          })
+        : { kind: "pending_ai" as const, reason: "grader_unavailable" as const };
+
+    const base = { attemptId, attemptNo, correlationId, attemptsLeft: item.maxAttempts - attemptNo };
+
+    if (graded.kind === "graded") {
+      return NextResponse.json({
+        ...base,
+        status: "graded",
+        source: "ai",
+        result: graded.result,
+        // The child-facing field is named `explanation` on the deterministic
+        // path, and the practice screen reads that one key for both. A second
+        // name would mean a screen that renders one grader and not the other.
+        explanation: graded.feedbackToLearner,
+        nextStep: graded.nextStep,
+        verdictId: graded.verdictId,
+      });
+    }
+
+    if (graded.kind === "awaiting_teacher") {
+      /**
+       * The model refused, or could not judge the answer. Not a score of zero
+       * and not a silent failure: the verdict row exists with no score, and it
+       * is already at the front of the teacher queue.
+       */
+      return NextResponse.json({
+        ...base,
+        status: "awaiting_teacher",
+        pendingReason: graded.reason,
+        verdictId: graded.verdictId,
+      });
+    }
+
     return NextResponse.json({
-      attemptId,
-      attemptNo,
-      correlationId,
+      ...base,
       status: "pending_ai",
       /**
        * Why the child is not getting feedback: told to the screen so it can say
        * so in words, instead of the screen guessing from a missing field.
        */
-      pendingReason: hasScope(consent, "ai_grading") ? "grader_not_available" : "consent_missing",
-      attemptsLeft: item.maxAttempts - attemptNo,
+      pendingReason: hasScope(consent, "ai_grading") ? graded.reason : "consent_missing",
     });
   }
 

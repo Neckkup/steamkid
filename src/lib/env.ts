@@ -112,6 +112,36 @@ const schema = z.object({
   SENTRY_AUTH_TOKEN: blankAsUndefined(z.string().min(1)),
 
   /**
+   * Kill switch for AI grading on a child's own request (PRO-115).
+   *
+   * `off` puts `/api/attempts` and `/api/submissions` back to the behaviour
+   * they had before the grader was connected: the answer is still stored, the
+   * child is still told their work arrived, and no model is called. It is an
+   * environment variable rather than a code path so a bad prompt version or a
+   * cost spike can be stopped without a deploy.
+   *
+   * Default `on`. Leaving it off by default would reproduce the thing PRO-115
+   * was filed about — an engine wired to nothing — and the real gates on this
+   * path are the ones that cannot be forgotten: guardian `ai_grading` consent,
+   * an `app.learner` row, and a database to store the verdict in.
+   */
+  AI_GRADING_INLINE: blankAsUndefined(z.enum(["on", "off"])).transform((value) => value ?? "on"),
+
+  /**
+   * How long a child waits for the grader before the screen stops waiting.
+   *
+   * Not a cancellation: the call keeps running and its verdict is still stored
+   * (see `gradeForRequest`), so the teacher queue and a later page load get it.
+   * This is only the point at which making a ten-year-old stare at a spinner
+   * stops being worth it. `docs/runbooks/ai-observability.md` warns at a p95 of
+   * 15s and alerts at 30s, so a budget above 15s would mean the normal case is
+   * already an alert.
+   */
+  AI_GRADING_BUDGET_MS: blankAsUndefined(z.coerce.number().int().min(1_000).max(30_000)).transform(
+    (value) => value ?? 8_000,
+  ),
+
+  /**
    * Shared secret for internal cron endpoints (`/api/internal/*`).
    *
    * Set this in production. Internal endpoints check `Authorization: Bearer
