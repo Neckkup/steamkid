@@ -178,6 +178,63 @@ Paperclip secrets to fall back to — checked; the granted set is Gemini, Langfu
 Sentry only. Every route an agent has is closed, which is what makes the remaining step genuinely
 the founder's rather than something to delegate.
 
+## Q5 — `administration` is not grantable, and never was
+
+The founder answered PRO-123's question by choosing "grant the Paperclip App
+`Administration: Read and write`". **That option does not exist.** This is the finding that
+retires three tickets' worth of the same dead end, and it is the reason this ADR gets a fifth
+question it was not originally asked.
+
+A GitHub App installation can only ever hold permissions the **App itself declares** in its
+manifest. An installation owner grants from that declared set; they cannot invent a permission the
+app never asked for. Two public reads settle it:
+
+| Read | Result |
+| --- | --- |
+| `GET /user/installations` | installation `164005007`, app `paperclip-for-github` (app id `4831627`) — granted: `actions:read`, `checks:read`, `contents:write`, `deployments:read`, `issues:write`, `metadata:read`, `pull_requests:write`, `statuses:read`, `workflows:write` |
+| `GET /apps/paperclip-for-github` (public manifest) | **declared** permissions are exactly the same nine |
+
+The granted set already equals the declared set. Nothing is being withheld from us and nothing is
+pending acceptance — there is simply no `administration` in the app to grant. The founder who went
+looking for that toggle at `github.com/settings/installations/164005007` would have found no such
+checkbox, searched, and concluded the instruction was wrong. It was.
+
+This reframes the earlier three `403`s. They were read as "the founder has not granted it yet",
+which made each ticket end by asking again. The correct reading is **"Paperclip's App cannot hold
+this permission"**, which is not a request that can ever succeed, however many times it is made.
+
+### Consequences
+
+- **Option A in PRO-123 is withdrawn, not deferred.** It is not a better long-term answer that we
+  keep postponing; it is unavailable. Repeating it costs a founder interruption per ticket and
+  returns nothing.
+- **Repository-administration changes are permanently founder-operated on this stack**, until
+  Paperclip's vendor adds `administration` to the App manifest and every installation owner accepts
+  the widened permission. That is a change to Paperclip the product, outside this company's control,
+  and not a prerequisite we should let Stage B wait on.
+- **Design around it rather than for it.** Anything an agent must do unattended has to sit inside
+  `contents`, `pull_requests`, `checks`, `actions`, `issues` or `workflows`. Branch protection,
+  rulesets, auto-merge and repository settings are outside that boundary and always will be. Treat a
+  need for `administration` as a design smell in an agent workflow, not as a pending grant.
+- **The read-back path below matters more because of this.** We cannot write the setting, so being
+  able to *verify* it without `administration` is what keeps Stage B falsifiable rather than
+  trust-based.
+
+### Rejected
+
+*Ask the founder to grant it again, more clearly.* This is what the previous two tickets did. The
+evidence above says the request is unsatisfiable, so a third ask is not persistence, it is a loop.
+
+*Give agents a classic personal access token with `repo` scope to bypass the App.* This would work
+technically — a `repo`-scoped PAT carries branch-protection rights. Rejected: it is a long-lived
+credential with full write access to every repository the founder owns, held by a fleet of agents,
+to save one founder interaction per rare settings change. The blast radius is permanent and the
+saving is small. The App's narrow scope is a feature we should not trade away for convenience.
+
+*Have an Actions workflow enforce the rule by reverting bad pushes.* Rejected: detection-and-revert
+is not a gate, it rewrites history, and it would land unverified code on `main` before undoing it —
+the exact hazard `--auto` already demonstrated on PR #1.
+
 ## A better read-back than Stage A had
 
 Stage A could not verify its own mandatory condition, because "do not allow bypassing" lives behind
@@ -233,10 +290,20 @@ Steps 2 and 3 are one change and the order between them is load-bearing — see 
 5. **An agent attempts one direct push to `main`** and records the rejection. That is the evidence
    PRO-123 declares non-negotiable.
 
-Steps 2 and 3 need `administration`. Granting the Paperclip GitHub App `administration: write`
-once lets an agent do 2, 3, 4 and 5 unattended, and retires this class of interruption permanently —
-it is the third ticket in a row to stop here. Failing that, the founder does 2 and 3 in the settings
-UI and an agent does 4 and 5.
+Steps 2 and 3 need `administration`, which per Q5 the Paperclip App cannot hold and cannot be
+granted. **The founder does 2 and 3 in the settings UI; agents do 1, 4 and 5.** This is the only
+split available, not a fallback from a better one, and it does not improve with another ask.
+
+The founder's half is two settings on one visit:
+
+1. `Settings → General → Pull Requests` → tick **Allow auto-merge**.
+2. `Settings → Branches → main → Edit` → tick **Require status checks to pass before merging**,
+   tick **Require branches to be up to date before merging**, then search for and add **`verify`**
+   and **`secret-scan`**. Leave **Do not allow bypassing the above settings** ticked as Stage A left
+   it. Save.
+
+Order matters: auto-merge first. If required checks land first, every agent is forced into a PR
+flow with no way to wait for CI except burning heartbeats — the cost this ADR exists to avoid.
 
 **Warn the founder about one consequence before step 3:** bypass is disabled for everyone, so after
 this lands the founder cannot push directly to `main` either. That is the intended design — it is

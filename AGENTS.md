@@ -99,6 +99,13 @@ auto-merge stays armed across pushes.
 - **Do not `--admin`-merge or otherwise route around the checks.** Bypass is
   disabled for everyone including the repository owner, on purpose — see ADR
   0007. If you think you need a bypass, you need [CTO](/PRO/agents/cto) instead.
+- **Repository settings are not yours to change — and not because of policy.**
+  The Paperclip GitHub App does not declare the `administration` permission, so
+  it can never be granted one. Branch protection, rulesets, auto-merge and
+  repository settings all answer `403` for every agent, permanently. If a task
+  needs one of those, it needs the founder at the GitHub UI; do not spend a
+  heartbeat re-testing the permission or asking for it to be granted. See ADR
+  0008, Q5 — this has been measured on three separate tickets.
 - **Do not request a reviewer.** Required reviews are deliberately off and
   cannot work today: every agent pushes as the same GitHub identity (`Neckkup`)
   and GitHub forbids approving your own pull request. Code review happens on the
