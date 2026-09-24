@@ -1,9 +1,12 @@
 # ADR 0007 — Branch protection on `main`
 
-- **Status:** accepted, pending CEO ratification of the spend (see "What this costs")
-- **Date:** 2026-09-23
-- **Decided by:** CTO
-- **Issue:** PRO-111 (proposed by PRO-105, triggered by the force push in PRO-110)
+- **Status:** **amended 2026-09-24 — the founder chose the public route and declined the spend.** The
+  section "Founder decision, 2026-09-24" at the bottom is what we are doing. Everything above it is the
+  CTO's recommendation as written on 2026-09-23 and is kept unedited, because the reasoning it was
+  overruled on is the thing worth being able to read back.
+- **Date:** 2026-09-23, amended 2026-09-24
+- **Decided by:** CTO (recommendation); founder (decision, PRO-112)
+- **Issue:** PRO-111 (proposed by PRO-105, triggered by the force push in PRO-110); spend declined in PRO-112
 
 ## Decision
 
@@ -154,3 +157,111 @@ step is genuinely not delegable to an agent. Everything after it is.
 3. Stage A is live with an empty bypass list — pending Pro. Proof is
    `GET /repos/Neckkup/steamkid/rules/branches/main` returning the two rules and
    `main` reading `protected: true`, not a screenshot of the settings page.
+
+
+---
+
+## Founder decision, 2026-09-24
+
+**Asked in PRO-112:** approve $4/month for GitHub Pro, or name the alternative.
+
+**Answered:** do not pay. **Make `Neckkup/steamkid` public instead**, and take branch protection on the
+free tier.
+
+That overrules the recommendation above. The rest of this section is what the decision changes, what it
+does not change, and what we measured before acting on it — not a re-argument of it.
+
+### What we measured before publishing, 2026-09-24
+
+The whole case against going public rests on exposure being permanent. So the question that actually
+matters is not "should we publish" — that is settled — but **"what exactly is in the 69 commits we are
+about to publish"**, which nobody had asked yet.
+
+The CI `secret-scan` job does not answer it. It runs `git grep` over the **working tree at `HEAD`**, so a
+credential that was committed and later removed is invisible to it and still fully present in history.
+While the repository is private that gap costs nothing. On the day it goes public, that gap *is* the risk.
+
+So the sweep was run over every commit reachable from every ref, with a pattern set considerably wider
+than CI's:
+
+| Checked across all 69 commits | Result |
+| --- | --- |
+| CI's own pattern set (`sk-ant-`, `pk-lf-`, `sk-lf-`, `ghp_`, Sentry DSN) | only `*-not-the-leaked-one` fixtures in `leaked-credentials.test.ts` |
+| Google (`AIza…`), AWS (`AKIA…`), all GitHub token prefixes, Slack (`xox…`), JWTs, `BEGIN … PRIVATE KEY` | none |
+| Postgres / MySQL / MongoDB / Redis URLs carrying a password | only test fixtures, every one with the literal password `pw` |
+| `.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `id_rsa*`, `*service-account*` ever added in any commit | only `.env.example`, and every value in it is blank |
+| Supabase project refs, real Sentry DSNs, account-identifying hostnames | none — the only hostname is `aws-0-ap-southeast-1.pooler.supabase.com`, a shared regional endpoint that identifies no project |
+
+**History is clean.** No credential has to be rotated before publishing, and no history rewrite is needed.
+That is a real finding and it makes this decision materially cheaper than the section above assumed — the
+worst case in "Why not make it public" was a secret `secret-scan` had missed, and there is not one.
+
+What we publish is therefore design, not credentials: the event taxonomy, the redaction rules, the consent
+model, the grading prompts, and `scripts/sql/roles.sql`. That disclosure is real and it is the thing the
+founder decided to accept. Two consequences of it are worth naming precisely, because they are the parts
+that bite later rather than on day one:
+
+- **`scripts/sql/roles.sql` becomes a published description of our privilege boundaries.** It documents
+  which grants keep the runtime role away from training data. It contains no passwords, so it is not a key
+  — it is a map. The mitigation is that the boundary must hold against someone who has read it, which is
+  what `npm run verify:roles` already asserts against a real database. Publishing raises how much that
+  check matters; it does not change what it does.
+- **The grading prompts become readable by anyone being graded.** This is a product-integrity exposure, not
+  a security one, and it is the one genuinely *new* cost that the section above did not weigh: a student who
+  can read `rubric.ts` and the grading prompts can write to the rubric rather than to the work. Worth its own
+  ticket once we have real users; not a blocker on publishing today.
+
+### What going public does *not* buy us
+
+The section above found two gates, and the founder's route clears the first one only.
+
+The plan gate goes away: the rulesets API stops answering `Upgrade to GitHub Pro or make this repository
+public` the moment the repository is public. But the **`administration` gate is unchanged** — the Paperclip
+GitHub App installation still holds no `administration` permission, so no agent can create the ruleset
+through the API on a public repository either. Publishing does not reduce the number of steps the repository
+owner personally has to take; it changes only what those steps cost. Stage A still needs one of:
+
+1. Grant the Paperclip GitHub App `administration: write` on this repository → an agent configures the
+   ruleset and reads it back as proof; or
+2. The founder sets it in the UI: Rules → Rulesets → `main` → *Restrict force pushes* +
+   *Restrict deletions*, **bypass list empty**.
+
+The empty bypass list stays mandatory for exactly the reason given above, and it is unaffected by
+visibility.
+
+### What going public does buy us, beyond the ruleset
+
+Two things the paid route would not have given us, and they partly offset the disclosure:
+
+- **GitHub secret scanning with push protection is free on public repositories.** That is a server-side
+  control that rejects a credential *at push time* — strictly stronger than our `secret-scan` job, which can
+  only fail a build after the object already exists on GitHub. Turn it on the same day; it is the best thing
+  in this decision.
+- **Actions minutes are unmetered on public repositories.**
+
+And one new exposure that arrives with them: `ci.yml` triggers on `pull_request`, so on a public repository
+**anyone can open a pull request from a fork and cause our workflows to run**. Our secrets are not handed to
+fork-PR runs, and we use no `pull_request_target` (checked 2026-09-24), so this is a nuisance rather than a
+compromise — but set *Require approval for all external contributors* in Actions settings when publishing.
+
+### Revised migration cost
+
+| If wrong about | Cost to change |
+| --- | --- |
+| Going public | **Unbounded and unrecoverable**, and this is now the decision's load-bearing risk rather than a hypothetical. Flipping back to private un-clones, un-forks and un-indexes nothing. The sweep above is what makes the risk acceptable rather than merely accepted: there is nothing in history that a rotation could fix afterwards, so the exposure is limited to design disclosure that we walked into deliberately. |
+| Not paying for Pro | **Very low, and still open.** $4/month remains available at any time, and buying it later would let us go private again — but only for commits that have not been published yet. |
+| Staging B behind A | Unchanged from above. |
+
+### Order of operations
+
+Publishing before the ruleset exists means `main` is briefly world-readable *and* force-pushable at once.
+That window is not dangerous — force push needs write access, which is unchanged by visibility — but there
+is no reason to leave it open longer than the founder's two clicks. Do them in one sitting:
+
+1. Turn on secret scanning + **push protection** (available the moment the repo is public).
+2. Set *Require approval for all external contributors* in Actions settings.
+3. Create the `main` ruleset — restrict force pushes, restrict deletions, **bypass list empty**.
+4. An agent then reads `GET /repos/Neckkup/steamkid/rules/branches/main` back and confirms `main` reports
+   `protected: true`. Only that counts as Stage A being done — not a screenshot of the settings page.
+5. Delete `.github/workflows/main-guard.yml`. It exists only because we could not block the event; once we
+   can, it is dead weight.
