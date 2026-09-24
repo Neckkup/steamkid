@@ -33,26 +33,42 @@ git switch -c pro-123-short-slug          # branch name: <ticket>-<slug>
 git commit -m "Imperative summary (PRO-123)"
 git push -u origin HEAD
 gh pr create --fill                        # title ends with the ticket id
-gh pr merge --squash --auto --delete-branch # GitHub merges when both checks pass
+# gh pr merge --squash --auto --delete-branch  <- NOT YET. See the section below.
 ```
 
-Then **end the heartbeat.** Do not poll, do not sleep, do not re-run `gh pr
-checks` in a loop. `--auto` means GitHub merges the PR itself the moment
-`verify` and `secret-scan` go green. Nothing needs to be awake for that.
+Then schedule the monitor below and **end the heartbeat.** Do not poll, do not
+sleep, do not re-run `gh pr checks` in a loop.
 
-## Confirm auto-merge actually armed — `--auto` can silently merge instead
+**The fifth command is suspended until Stage B step 2 lands.** `--auto` is
+supposed to hand the waiting to GitHub. On this repository today it does not: it
+merges immediately, before CI has finished. Measured twice, most recently on
+PR #14 on 2026-09-24 with `autoMergeAllowed=true` — armed while `verify` was
+still `IN_PROGRESS`, and the pull request was on `main` seconds later with
+`autoMergeRequest: null`. Turning the repository setting on was necessary and did
+not fix this. **What gates a merge is required status checks, and those are still
+`off`** (`npm run verify:stage-b`). Until that verifier reports Stage B on, open
+the PR, schedule the monitor, and merge by hand on green.
 
-**As of 2026-09-24 that setting is on** — the founder ticked **Allow auto-merge**
-and `npm run verify:stage-b` now reads `autoMergeAllowed=true`, so the last of
-the five commands above does what it says. This line was `false` earlier the
-same day (PRO-129); it is a measurement with a date on it, so run the verifier
-rather than trusting the sentence you are reading.
+## `--auto` merges now, not on green — why the fifth command is suspended
 
-`--auto` is a request, not a guarantee. When the repository setting **Allow
-auto-merge** is off, `gh pr merge --auto` does not fail — it falls back to
-merging the pull request **immediately**, before CI has said anything. That was
-observed on PR #1 of this repository. Until required checks are enforced, that
-fallback merges unverified code to `main` while reporting success.
+**Allow auto-merge is on** as of 2026-09-24; the founder ticked it and
+`npm run verify:stage-b` reads `autoMergeAllowed=true`. That fixed the setting
+and did **not** fix the behaviour.
+
+`--auto` is a request, not a guarantee. GitHub only has something to wait for
+when a pull request is *blocked* — and with no required status checks configured,
+nothing blocks it, so `--auto` merges on the spot and reports success:
+
+| PR | `autoMergeAllowed` | Checks when armed | Result |
+| --- | --- | --- | --- |
+| #1 | `false` | pending | merged immediately, `autoMergeRequest: null` |
+| #12 | `true` | both green | merged immediately, `autoMergeRequest: null` |
+| #14 | `true` | `verify` **in progress** | merged immediately, `autoMergeRequest: null` |
+
+PR #14 is the one that settles it: the setting was on, CI had not finished, and
+the change was on `main` anyway. Required status checks — Stage B step 2, still
+`enforcement_level=off` — are the thing that makes a merge wait. The repository
+setting only makes a *gated* merge expressible once something does the gating.
 
 So the flag is never the last word. Check the result:
 
@@ -61,23 +77,19 @@ gh pr view <n> --json autoMergeRequest -q .autoMergeRequest   # must NOT be null
 ```
 
 - Non-null → auto-merge is armed. Schedule the monitor and end the heartbeat.
-- `null` and the PR is still open → the repository setting is off. Stop; do not
-  merge by hand as a workaround. Raise it with [CTO](/PRO/agents/cto).
-- `null` and the PR is already **merged** → GitHub had nothing left to wait for
-  and merged on the spot. With the setting on, that is the benign case *only if*
-  both checks were already green when you armed it; if they were not, the change
-  landed without CI. Either way, say which it was in your issue comment rather
-  than reporting a clean armed merge, and check that `main` is green. Do not read
-  a merged PR as proof the setting is off — measured on PR #12 with
-  `autoMergeAllowed=true` and both checks already green, `--auto` merged
-  immediately and reported `autoMergeRequest: null` (PRO-129).
+- `null` and the PR is still open → auto-merge did not arm and nothing will
+  merge it. Schedule the monitor and merge by hand on green.
+- `null` and the PR is already **merged** → you hit the fail-open path in the
+  table above. Say so plainly in your issue comment rather than reporting a clean
+  armed merge, check whether both checks were green at merge time, and check that
+  `main` is green now. This is the outcome you avoid by not running `--auto`.
 
 ## Before you end that heartbeat, schedule one monitor
 
-Auto-merge fires on green. It does **not** fire when CI is red or the branch
-conflicts — the PR just sits there forever and your work never lands. So the
-same heartbeat that enables auto-merge schedules a single issue monitor, and
-that monitor is the only thing that ever re-checks:
+Nothing merges your PR while you are asleep — not until Stage B lands and
+`--auto` becomes usable. The monitor is what brings you back to merge it. The
+same heartbeat that opens the PR schedules a single issue monitor, and that
+monitor is the only thing that ever re-checks:
 
 ```jsonc
 PATCH /api/issues/{issueId}
@@ -98,9 +110,10 @@ PATCH /api/issues/{issueId}
 ```
 
 Confirm the response echoes a non-null `monitorNextCheckAt`, keep the issue
-`in_progress` or `in_review`, and exit. On the wake: if the PR merged, clear the
-monitor and finish the ticket. If CI is red, fix it and push to the same branch —
-auto-merge stays armed across pushes.
+`in_progress` or `in_review`, and exit. On the wake: if both checks are green,
+run `gh pr merge <n> --squash --delete-branch` (no `--auto`), clear the monitor
+and finish the ticket. If CI is red, fix it and push to the same branch, then
+re-arm the monitor.
 
 **`blocked` and a monitor are mutually exclusive.** The scheduler only wakes
 issues in `in_progress` or `in_review`, so `PATCH`ing `status: "blocked"` in the
