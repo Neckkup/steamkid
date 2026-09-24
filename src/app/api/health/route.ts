@@ -1,11 +1,7 @@
 import { NextResponse } from "next/server";
 
-import {
-  env,
-  isDatabaseConfigured,
-  isLangfuseConfigured,
-  isSentryConfigured,
-} from "@/lib/env";
+import { env, isLangfuseConfigured, isSentryConfigured } from "@/lib/env";
+import { probeBehaviourDb } from "@/lib/events/runtime";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +10,11 @@ export const dynamic = "force-dynamic";
  * preview is wired up, without needing dashboard access.
  *
  * Reports only booleans — never a key, a host, or a connection string.
+ *
+ * `database` reflects a real `SELECT 1` against the behaviour pool, not just
+ * whether `DATABASE_URL` is set. A pool exists the moment the env var appears,
+ * but a connection is only attempted on the first query — which is why the old
+ * `isDatabaseConfigured` flag read `true` even when Postgres was unreachable.
  */
 export async function GET() {
   return NextResponse.json({
@@ -21,7 +22,7 @@ export async function GET() {
     appEnv: env.APP_ENV,
     checkedAt: new Date().toISOString(),
     integrations: {
-      database: isDatabaseConfigured,
+      database: await probeBehaviourDb(),
       langfuse: isLangfuseConfigured,
       sentry: isSentryConfigured,
     },

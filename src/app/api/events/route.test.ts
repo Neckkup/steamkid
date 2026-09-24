@@ -246,4 +246,29 @@ describe("POST /api/events", () => {
       setEventSink(new PostgresEventSink(db));
     }
   });
+
+  it("returns 503 event_store_unavailable when DATABASE_URL is set but Postgres is unreachable", async () => {
+    // Simulates the real deployment scenario: a configured but unreachable DB.
+    // Injecting null (above) is a different code path and does not catch this bug.
+    const refusingDb = {
+      query() {
+        const err = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), {
+          code: "ECONNREFUSED",
+        });
+        return Promise.reject(err);
+      },
+    };
+    setBehaviourDb(refusingDb);
+    setEventSink(new PostgresEventSink(refusingDb));
+    try {
+      const response = await post(journey.slice(0, 2), consenting.publicRef);
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toMatchObject({
+        error: "event_store_unavailable",
+      });
+    } finally {
+      setBehaviourDb(db);
+      setEventSink(new PostgresEventSink(db));
+    }
+  });
 });
