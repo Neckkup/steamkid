@@ -7,7 +7,13 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded runs on a PR branch — nobody needs the result for a commit
+  # that has already been pushed over. Never cancel a run on `main`: with
+  # `--auto` suspended (ADR 0008) the push run is the only check a merged commit
+  # ever gets, and cancelling it leaves that commit with no result of its own.
+  # Measured 2026-09-24: runs 35961205134 and 35961231259 were both cancelled by
+  # the next merge, so nothing between 943ec98 and 61bcabd was ever verified.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Least privilege for GITHUB_TOKEN, pinned here rather than left to the
 # repository's Actions setting — that setting reads 403 to our GitHub App
