@@ -305,7 +305,7 @@ someone remembering it:
 
 | What | Where | Who acts next |
 | --- | --- | --- |
-| Stage A — restrict force pushes + deletions, bypass list empty | PRO-121 | founder (grant the App `administration: write`, or set the ruleset in the UI) |
+| Stage A — restrict force pushes + deletions, bypass list empty | PRO-121 | **done 2026-09-24** via classic branch protection — see the third read-back at the end of this document |
 | Stage B — required `verify` + `secret-scan`, i.e. `main` becomes PR-only | PRO-123 | CTO, blocked on PRO-121 |
 
 Stage B is a separate ticket rather than a checkbox for the reason argued above, and PRO-123 additionally
@@ -432,3 +432,55 @@ Since it cannot be read, it is measured. The test is a force push, made safe by 
 
 The only history at risk is one commit that exists in the local repository at the moment the test runs.
 The result is recorded below.
+
+#### Result: rejected — and rejected *for an admin*, which is the part that matters
+
+```
+remote: error: GH006: Protected branch update failed for refs/heads/main.
+remote: - Cannot force-push to this branch
+ ! [remote rejected] 4127c0e -> main (protected branch hook declined)
+```
+
+`main` stayed at `cf81b72`; no restore push was needed. The fast-forward in step 1 had been accepted
+moments earlier, so the rejection is the force flag being refused, not a broken push path.
+
+The rejection is stronger evidence than it first looks, because of *who* was refused:
+
+| Question | How it was answered | Answer |
+| --- | --- | --- |
+| What identity does our push use? | `GET /user` returns `200` — this is a user-to-server token, not an installation token | `Neckkup` |
+| What is that identity's role on the repo? | `GET /repos/Neckkup/steamkid/collaborators/Neckkup/permission` | `admin` |
+| Did the push events agree? | `actor` and `triggering_actor` on every recent `main-guard` run | `Neckkup` |
+
+So the force push was attempted **by a repository admin and refused anyway**. That is exactly what
+"Do not allow bypassing the above settings" does, and nothing else in classic branch protection produces
+that result. The mandatory bypass condition — the one this ADR has insisted on twice and could not read
+through `/branches/main/protection` — is satisfied, measured rather than asserted.
+
+This also retires a worry recorded earlier in this document. "Every agent pushes as `Neckkup`, who is an
+admin, so an admin-bypassable rule protects nothing" was the right thing to worry about, and the test
+confirms both halves of it: agents really do push as an admin, *and* that admin is really blocked.
+
+#### Stage A is done, and `main-guard.yml` is deleted in the same commit
+
+`main-guard.yml` carried its own deletion condition in a comment: *"Delete this file the day a real ruleset
+blocks non-fast-forward pushes."* A classic rule rather than a ruleset blocks them, which the diagram above
+already established as an equally valid route. The condition is met, so the file goes.
+
+What it was for is now handled better upstream. It could never prevent a force push — nothing runs before
+the ref moves — it could only make one loud after the fact and print the pre-push SHA so history could be
+recovered by hand. There is no longer an after-the-fact to record: the push is refused at the server, by
+the only identity that has write access here.
+
+#### Two loose ends, both deliberately left open
+
+1. **`administration` was never granted to the App**, despite the founder's answer. Measured on a token
+   minted after that answer: `403` on both `POST /rulesets` (`administration=write`) and
+   `GET /branches/main/protection` (`administration=read`). Nothing depends on this now — the founder
+   configured the protection by hand and Stage A is closed — but it is the reason a force-push test was
+   needed to read a checkbox, and it will be the reason again for Stage B (PRO-123). Granting
+   `administration: read` alone would let a heartbeat verify protection directly and retire this technique.
+2. **Secret scanning, push protection, and fork-PR approval remain unverifiable from here.**
+   `/secret-scanning/alerts` answers `403` (`secret_scanning_alerts=read`) and `/actions/permissions`
+   answers `403` (`administration=read`). The founder reports all three are enabled. That report is
+   recorded as a report, not as a measurement, and this document does not claim otherwise.
