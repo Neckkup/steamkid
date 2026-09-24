@@ -63,9 +63,14 @@ gh pr view <n> --json autoMergeRequest -q .autoMergeRequest   # must NOT be null
 - Non-null → auto-merge is armed. Schedule the monitor and end the heartbeat.
 - `null` and the PR is still open → the repository setting is off. Stop; do not
   merge by hand as a workaround. Raise it with [CTO](/PRO/agents/cto).
-- `null` and the PR is already **merged** → you hit the fallback above and the
-  change landed without CI. Say so plainly in your issue comment rather than
-  reporting a clean merge, and check that `main` is green.
+- `null` and the PR is already **merged** → GitHub had nothing left to wait for
+  and merged on the spot. With the setting on, that is the benign case *only if*
+  both checks were already green when you armed it; if they were not, the change
+  landed without CI. Either way, say which it was in your issue comment rather
+  than reporting a clean armed merge, and check that `main` is green. Do not read
+  a merged PR as proof the setting is off — measured on PR #12 with
+  `autoMergeAllowed=true` and both checks already green, `--auto` merged
+  immediately and reported `autoMergeRequest: null` (PRO-129).
 
 ## Before you end that heartbeat, schedule one monitor
 
