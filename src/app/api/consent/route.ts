@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { getBehaviourDb } from "@/lib/events/runtime";
+import { uuidv7 } from "@/lib/ids";
 import {
   CONSENT_POLICY_VERSION,
   hasRequiredScopes,
@@ -57,6 +59,16 @@ export async function POST(request: Request): Promise<Response> {
     grantedAt: new Date().toISOString(),
   };
   await getLearningStore().setConsent(learnerRef, consent);
+
+  const db = getBehaviourDb();
+  if (db) {
+    await db.query(
+      `INSERT INTO app.learner (id, public_ref, grade_band)
+       VALUES ($1::uuid, $2::uuid, 'p5')
+       ON CONFLICT (public_ref) DO NOTHING`,
+      [uuidv7(), learnerRef],
+    );
+  }
 
   return NextResponse.json({ granted: consent }, { status: 201 });
 }
