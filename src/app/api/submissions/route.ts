@@ -1,7 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { z } from "zod";
 
 import { getItemById, isWrittenItem } from "@/content";
+import { gradeForRequest } from "@/lib/learning/grade-request";
 import { ensureLearnerRef, getConsentState } from "@/lib/learning/session";
 import { getLearningStore } from "@/lib/learning/store";
 import { answerCharCount } from "@/lib/learning/text";
@@ -18,6 +19,8 @@ const body = z.object({
   activeMsDelta: z.number().int().min(0).max(24 * 60 * 60 * 1000),
   /** A draft is autosaved; a submit is the child deciding they are finished. */
   action: z.enum(["draft", "submit"]),
+  /** `events.session.id`, when the editor has one. See `/api/attempts`. */
+  sessionId: z.uuid().nullish(),
 });
 
 /**
@@ -27,10 +30,20 @@ const body = z.object({
  * the thing PRO-3 calls out as the company's real asset: the final text says
  * what a child produced, the sequence of drafts says how they got there.
  *
- * Submitting does not grade. There is no grading engine yet (PRO-8), so the
- * response says `awaiting_grading` and the result screen tells the child their
- * work is safely in — which is true — rather than showing a number nobody
- * calculated.
+ * Submitting grades (PRO-115). The draft is saved first, always, and only then
+ * does `gradeForRequest` call the model: a child's twenty minutes of writing
+ * must not depend on a grading call succeeding. The response then says one of
+ *
+ *   - `graded` — a stored, teacher-correctable verdict with feedback,
+ *   - `awaiting_teacher` — the model refused or could not judge it; a verdict
+ *     row exists with no score and the work is at the front of the teacher
+ *     queue,
+ *   - `awaiting_grading` — nothing was graded; `pendingReason` says why. This
+ *     is the pre-PRO-115 answer and every failure path still lands on it.
+ *
+ * A draft (`action: "draft"`) is never graded. Autosave firing a model call
+ * every few keystrokes would cost more than the product and would grade work a
+ * child has not finished.
  */
 export async function POST(request: Request): Promise<Response> {
   const parsed = body.safeParse(await request.json().catch(() => null));
@@ -54,7 +67,8 @@ export async function POST(request: Request): Promise<Response> {
     return NextResponse.json({ error: "empty_draft" }, { status: 422 });
   }
 
-  if (!(await getConsentState())) {
+  const consent = await getConsentState();
+  if (!consent) {
     return NextResponse.json({ error: "consent_required" }, { status: 403 });
   }
 
@@ -73,6 +87,31 @@ export async function POST(request: Request): Promise<Response> {
   const record =
     parsed.data.action === "submit" ? ((await store.submit(learnerRef, saved.id)) ?? saved) : saved;
 
+  /**
+   * Grading runs only on submit, and only after the work is saved above.
+   *
+   * `attemptNumber: 1` because a project is submitted, not retried: the store
+   * keeps one submission per piece of work and every revision is a draft on it.
+   * A re-grade of the same submission is a second verdict row, which is what
+   * `attempt_number` on the row already allows for.
+   */
+  const graded =
+    record.submittedAt !== null
+      ? await gradeForRequest({
+          item: found.item,
+          submissionText: trimmed,
+          learnerRef,
+          consent,
+          correlationId: record.correlationId,
+          subjectType: "submission",
+          subjectId: record.id,
+          attemptNumber: 1,
+          lessonId: found.lesson.id,
+          sessionId: parsed.data.sessionId ?? undefined,
+          scheduleAfterResponse: after,
+        })
+      : null;
+
   return NextResponse.json(
     {
       submissionId: record.id,
@@ -82,8 +121,39 @@ export async function POST(request: Request): Promise<Response> {
       totalActiveMs: record.totalActiveMs,
       correlationId: record.correlationId,
       submittedAt: record.submittedAt,
-      status: record.submittedAt ? "awaiting_grading" : "draft_saved",
+      ...verdictFields(graded),
+      status: submissionStatus(record.submittedAt, graded),
     },
     { status: parsed.data.action === "submit" ? 201 : 200 },
   );
+}
+
+type Graded = Awaited<ReturnType<typeof gradeForRequest>>;
+
+/**
+ * `awaiting_grading` is kept for the "we did not grade it" case rather than
+ * renamed, because it is still exactly true — the work is in and a human will
+ * look — and because the result screen already says that in words a child
+ * reads as "fine".
+ */
+function submissionStatus(submittedAt: string | null, graded: Graded | null): string {
+  if (!submittedAt) return "draft_saved";
+  if (graded?.kind === "graded") return "graded";
+  if (graded?.kind === "awaiting_teacher") return "awaiting_teacher";
+  return "awaiting_grading";
+}
+
+function verdictFields(graded: Graded | null): Record<string, unknown> {
+  if (graded?.kind === "graded") {
+    return {
+      verdictId: graded.verdictId,
+      result: graded.result,
+      feedbackToLearner: graded.feedbackToLearner,
+      nextStep: graded.nextStep,
+    };
+  }
+  if (graded?.kind === "awaiting_teacher") {
+    return { verdictId: graded.verdictId, pendingReason: graded.reason };
+  }
+  return graded ? { pendingReason: graded.reason } : {};
 }

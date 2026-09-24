@@ -32,8 +32,11 @@ import { SqlVerdictStore, type VerdictStore } from "./verdict-store";
  * then correct. The `pg.Pool` cache below is on `globalThis` for the same
  * reason.
  */
-const installed = ((globalThis as unknown as { steamkidVerdictStore?: { store?: VerdictStore | null } })
-  .steamkidVerdictStore ??= {}) as { store?: VerdictStore | null };
+const installed = ((
+  globalThis as unknown as {
+    steamkidVerdictStore?: { store?: VerdictStore | null; db?: SqlExecutor | null };
+  }
+).steamkidVerdictStore ??= {}) as { store?: VerdictStore | null; db?: SqlExecutor | null };
 
 /** Point the verdict endpoints at a specific store. Pass `null` to clear it. */
 export function setVerdictStore(store: VerdictStore | null): void {
@@ -42,15 +45,40 @@ export function setVerdictStore(store: VerdictStore | null): void {
 
 /** As above, but from a raw executor — the usual form in a test. */
 export function setVerdictDb(db: SqlExecutor | null): void {
+  installed.db = db;
   installed.store = db ? new SqlVerdictStore(db) : null;
+}
+
+/**
+ * The executor behind the store, or null when there is no database.
+ *
+ * Exists because storing a verdict needs one thing the `VerdictStore`
+ * interface deliberately does not carry: `app.learner.id`. The grading path
+ * only ever sees the cookie's `public_ref`, and exchanging one for the other is
+ * a query (`resolveLearnerId`), not a method on a write interface. Widening
+ * `VerdictStore` with a learner lookup would put an identity concern inside the
+ * thing whose whole contract is "write a verdict, nothing else".
+ *
+ * `setVerdictStore()` alone therefore leaves this null on purpose: a test that
+ * installs a hand-rolled store has no database to resolve a learner against,
+ * and inventing `DATABASE_URL` underneath it would be a surprise.
+ */
+export function resolveVerdictDb(): SqlExecutor | null {
+  if (installed.db) return installed.db;
+  if (installed.store) return null;
+  if (!env.DATABASE_URL) return null;
+  return verdictPool();
 }
 
 /** The store for this request, or null when there is no database to write to. */
 export function resolveVerdictStore(): VerdictStore | null {
   if (installed.store) return installed.store;
   if (!env.DATABASE_URL) return null;
+  return new SqlVerdictStore(verdictPool());
+}
 
+function verdictPool(): Pool {
   const cache = globalThis as unknown as { steamkidVerdictPool?: Pool };
-  cache.steamkidVerdictPool ??= new Pool(pgConnectionOptions(env.DATABASE_URL));
-  return new SqlVerdictStore(cache.steamkidVerdictPool);
+  cache.steamkidVerdictPool ??= new Pool(pgConnectionOptions(env.DATABASE_URL as string));
+  return cache.steamkidVerdictPool;
 }
