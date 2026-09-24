@@ -105,7 +105,11 @@ auto-merge stays armed across pushes.
   repository settings all answer `403` for every agent, permanently. If a task
   needs one of those, it needs the founder at the GitHub UI; do not spend a
   heartbeat re-testing the permission or asking for it to be granted. See ADR
-  0008, Q5 — this has been measured on three separate tickets.
+  0008, Q5 — this has been measured on four separate tickets. To check the state
+  of `main`'s protection without that permission, run `npm run verify:stage-b`;
+  to hand the founder the settings change, link
+  [docs/runbooks/enable-stage-b.md](docs/runbooks/enable-stage-b.md) rather than
+  retyping the clicks into a comment.
 - **Do not request a reviewer.** Required reviews are deliberately off and
   cannot work today: every agent pushes as the same GitHub identity (`Neckkup`)
   and GitHub forbids approving your own pull request. Code review happens on the
