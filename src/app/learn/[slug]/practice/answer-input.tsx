@@ -57,6 +57,32 @@ export function answerCharLength(answer: AnswerValue): number {
   return answer.type === "text" ? [...answer.text.trim()].length : 0;
 }
 
+/**
+ * Colours for one MCQ row.
+ *
+ * `locked` is the fieldset's `disabled`, and it has to be drawn by hand.
+ * Before PRO-128 the circle was a native radio, so Chromium greyed it for free
+ * the moment the fieldset went disabled; now the circle is a `<span>` we draw,
+ * and nothing greyed it — a locked row looked exactly like a live one
+ * (PRO-132). The hover highlight is dropped for the same reason: a row that
+ * lights up under the pointer is promising a tap it will not honour, and that
+ * half predates PRO-128.
+ *
+ * The chosen row keeps full-strength text and a heavier border while the rest
+ * fade: after sending, the child is being told "this is the one you picked",
+ * and the feedback below refers to it.
+ */
+function mcqRowTone(selected: boolean, locked: boolean): string {
+  if (locked) {
+    return selected
+      ? "border-muted bg-line font-semibold"
+      : "border-line bg-background text-muted";
+  }
+  return selected
+    ? "border-brand bg-brand-soft font-semibold"
+    : "border-line bg-surface hover:border-brand";
+}
+
 export function AnswerInput({
   item,
   answer,
@@ -84,26 +110,30 @@ export function AnswerInput({
                * The native control is stretched over the row and made
                * transparent; the circle beside the text is decoration.
                */
-              className={`tap relative flex cursor-pointer items-center gap-3 rounded-2xl border-2 p-4 text-lg transition-colors has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-brand ${
-                selected
-                  ? "border-brand bg-brand-soft font-semibold"
-                  : "border-line bg-surface hover:border-brand"
-              }`}
+              className={`tap relative flex items-center gap-3 rounded-2xl border-2 p-4 text-lg transition-colors has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-brand ${
+                disabled ? "cursor-default" : "cursor-pointer"
+              } ${mcqRowTone(selected, disabled)}`}
             >
               <input
                 type="radio"
                 name={`item-${item.id}`}
-                className="absolute inset-0 m-0 size-full cursor-pointer appearance-none rounded-2xl opacity-0"
+                // The stretched input sits on top of the row, so its cursor is
+                // the one the child's pointer actually lands on.
+                className={`absolute inset-0 m-0 size-full appearance-none rounded-2xl opacity-0 ${
+                  disabled ? "cursor-default" : "cursor-pointer"
+                }`}
                 checked={selected}
                 onChange={() => onChange({ type: "mcq", choiceId: choice.id })}
               />
               <span
                 aria-hidden="true"
                 className={`flex size-7 shrink-0 items-center justify-center rounded-full border-2 bg-surface ${
-                  selected ? "border-brand" : "border-line"
+                  selected ? (disabled ? "border-muted" : "border-brand") : "border-line"
                 }`}
               >
-                {selected ? <span className="size-3.5 rounded-full bg-brand" /> : null}
+                {selected ? (
+                  <span className={`size-3.5 rounded-full ${disabled ? "bg-muted" : "bg-brand"}`} />
+                ) : null}
               </span>
               <span>{choice.label}</span>
             </label>
@@ -187,7 +217,10 @@ export function AnswerInput({
                   type="button"
                   disabled={disabled}
                   onClick={() => onChange({ type: "ordering", order: [...chosen, option.id] })}
-                  className="tap rounded-2xl border-2 border-line bg-surface p-3 text-left text-lg transition-colors hover:border-brand"
+                  // Same lock signal as the MCQ rows: once the answer is sent,
+                  // these stop looking tappable instead of only stopping being
+                  // tappable.
+                  className="tap rounded-2xl border-2 border-line bg-surface p-3 text-left text-lg transition-colors enabled:hover:border-brand disabled:cursor-default disabled:bg-background disabled:text-muted"
                 >
                   {option.label}
                 </button>
