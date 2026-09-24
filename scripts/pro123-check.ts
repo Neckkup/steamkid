@@ -37,6 +37,15 @@
  *   2. a PR from a branch behind `main` is blocked until
  *      it is updated                                     (strict is on)
  *
+ * Step 1 of the runbook — **Allow auto-merge** — is checked here too, because
+ * it is the half that fails silently. `gh pr merge --auto` does not error when
+ * the repository setting is off; on PR #1 it merged immediately with no check
+ * having run and reported success (ADR 0008, Q2). An agent following the
+ * documented flow would believe it had armed a gated merge. That setting is not
+ * on the legacy branches payload, but it is readable over GraphQL with the
+ * `metadata:read` every installation holds, so it costs one extra request to
+ * turn "we think auto-merge is on" into a measurement.
+ *
  * Exit code is 0 only when every readable condition holds, so this is safe to
  * use as the gate on closing PRO-123, and afterwards as a drift check: a
  * required check that quietly disappears reads as FAIL here.
@@ -68,6 +77,13 @@ type LegacyProtection = {
 type BranchResponse = {
   readonly protected?: boolean;
   readonly protection?: LegacyProtection;
+};
+
+/** The merge settings from `Settings -> General -> Pull Requests`, over GraphQL. */
+type MergeSettings = {
+  readonly autoMergeAllowed?: boolean;
+  readonly squashMergeAllowed?: boolean;
+  readonly deleteBranchOnMerge?: boolean;
 };
 
 type Result = {
@@ -129,7 +145,42 @@ async function fetchBranch(token: string): Promise<BranchResponse> {
   return (await response.json()) as BranchResponse;
 }
 
-function evaluate(branch: BranchResponse): Result[] {
+/**
+ * REST's `GET /repos/{owner}/{repo}` carries `allow_auto_merge`, but reading it
+ * is gated the same way writing it is. GraphQL exposes the same three fields to
+ * `metadata:read`, which every installation has, so this is the route that
+ * works for an agent.
+ */
+async function fetchMergeSettings(token: string): Promise<MergeSettings> {
+  const [owner, name] = REPO.split("/");
+  const response = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      query:
+        "query($owner:String!,$name:String!){repository(owner:$owner,name:$name)" +
+        "{autoMergeAllowed squashMergeAllowed deleteBranchOnMerge}}",
+      variables: { owner, name },
+    }),
+  });
+
+  const body = (await response.json()) as {
+    data?: { repository?: MergeSettings | null };
+    errors?: readonly { message?: string }[];
+  };
+
+  if (!response.ok || body.errors?.length || !body.data?.repository) {
+    const reason = body.errors?.map((error) => error.message).join("; ") ?? `HTTP ${response.status}`;
+    throw new Error(`GraphQL repository query failed: ${reason}`);
+  }
+  return body.data.repository;
+}
+
+function evaluate(branch: BranchResponse, merge: MergeSettings): Result[] {
   const protection = branch.protection;
   const required = protection?.required_status_checks;
   const level = required?.enforcement_level ?? "off";
@@ -160,6 +211,19 @@ function evaluate(branch: BranchResponse): Result[] {
         : `enforcement_level=${level}, want ${BINDS_EVERYONE} — untick "Allow specified actors to bypass" / tick "Do not allow bypassing"`,
     ),
     check(
+      "Step 1 — auto-merge is allowed on the repository",
+      merge.autoMergeAllowed === true,
+      merge.autoMergeAllowed === true
+        ? "autoMergeAllowed=true — `gh pr merge --auto` arms a gated merge"
+        : "autoMergeAllowed=false — `gh pr merge --auto` does NOT error here, it merges " +
+          "immediately with no check run. Settings -> General -> Pull Requests -> Allow auto-merge",
+    ),
+    check(
+      "Step 1 — squash merges are allowed",
+      merge.squashMergeAllowed === true,
+      `squashMergeAllowed=${merge.squashMergeAllowed} — AGENTS.md prescribes \`--squash\``,
+    ),
+    check(
       "Stage B — exactly verify and secret-scan are required",
       missing.length === 0 && extra.length === 0,
       contexts.length === 0
@@ -176,7 +240,11 @@ async function main(): Promise<void> {
   console.log(`repo   ${REPO}#${BRANCH}`);
   console.log(`token  ${token.source}`);
 
-  const results = evaluate(await fetchBranch(token.value));
+  const [branch, merge] = await Promise.all([
+    fetchBranch(token.value),
+    fetchMergeSettings(token.value),
+  ]);
+  const results = evaluate(branch, merge);
 
   console.log("");
   for (const result of results) {
@@ -186,6 +254,14 @@ async function main(): Promise<void> {
   const failed = results.filter((result) => !result.passed);
   console.log("");
   console.log(`${results.length - failed.length}/${results.length} readable conditions hold`);
+
+  if (merge.deleteBranchOnMerge !== true) {
+    console.log("");
+    console.log(
+      "NOTE  deleteBranchOnMerge=false — hygiene only, not a gate. " +
+        "`--delete-branch` on the PR still works.",
+    );
+  }
 
   console.log("");
   console.log("Not readable without the administration permission — prove these by doing them:");
