@@ -9,6 +9,16 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege for GITHUB_TOKEN, pinned here rather than left to the
+# repository's Actions setting — that setting reads 403 to our GitHub App
+# (`/actions/permissions` needs `administration`), so we cannot verify it and
+# must not depend on it. Both jobs only clone and run npm; nothing writes back
+# to GitHub. This matters more since the repo went public (PRO-121): `npm ci`
+# runs third-party install scripts, and a read-only token means a compromised
+# dependency cannot push to the repo it just read.
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest

@@ -295,3 +295,27 @@ only thing standing in it.
 
 The window is not more dangerous than it was while private: force pushing still requires write access,
 which visibility does not grant. What changed is that the cost of losing history is now paid in public.
+
+### Closing PRO-111 — what the decision ticket leaves behind, 2026-09-24
+
+PRO-111 asked for a choice and a written reason. Both exist: the recommendation above, the founder's
+overrule below it, and the measurements on both sides of the publish. The ticket is closed on that basis,
+not on protection being live — it is not. Two successors carry the rest, so that nothing here depends on
+someone remembering it:
+
+| What | Where | Who acts next |
+| --- | --- | --- |
+| Stage A — restrict force pushes + deletions, bypass list empty | PRO-121 | founder (grant the App `administration: write`, or set the ruleset in the UI) |
+| Stage B — required `verify` + `secret-scan`, i.e. `main` becomes PR-only | PRO-123 | CTO, blocked on PRO-121 |
+
+Stage B is a separate ticket rather than a checkbox for the reason argued above, and PRO-123 additionally
+has to answer *how a heartbeat waits for CI without polling* before the rule is switched on. That question
+is the real cost of Stage B, and it did not exist while pushes went straight to `main`.
+
+**One hardening landed with this closure**, because it is a consequence of publishing rather than of
+protection: `ci.yml` now pins `permissions: contents: read` for `GITHUB_TOKEN`. The repository-level
+Actions setting that would otherwise decide this reads `403` to our App (`/actions/permissions` requires
+`administration`), so we can neither verify it nor rely on it. Both CI jobs only clone and run npm, and
+`npm ci` executes third-party install scripts — on a public repository a read-only token is the difference
+between a compromised dependency reading the repo and writing to it. `main-guard.yml` already declared
+`permissions: {}`; `ci.yml` had declared nothing.
