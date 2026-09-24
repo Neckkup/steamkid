@@ -130,8 +130,22 @@ start() {
     fi
 
     echo "Starting Postgres on 127.0.0.1:$PORT ..."
-    "$PG_BIN/pg_ctl" -D "$DATA_DIR" -l "$LOG_FILE" -w \
-      -o "-p $PORT -k $STATE_DIR -c listen_addresses=127.0.0.1" start >/dev/null
+    # No Unix socket, TCP only. `-k "$STATE_DIR"` was the obvious choice and it
+    # is unusable here: a Unix socket path is capped at 107 bytes by the kernel,
+    # and a Paperclip workspace checkout is already ~121 bytes before
+    # `/.local-postgres/.s.PGSQL.55432` is appended. Postgres then refuses to
+    # start at all — "could not create any Unix-domain sockets" — and `pg_ctl`
+    # reports only "could not start server. Examine the log output." Nothing
+    # here talks over the socket anyway: `psql_node`, Prisma and the app all
+    # dial 127.0.0.1:$PORT. `pg_ctl -w` waits over TCP when there is no socket,
+    # the same path it takes on Windows.
+    if ! "$PG_BIN/pg_ctl" -D "$DATA_DIR" -l "$LOG_FILE" -w \
+      -o "-p $PORT -c unix_socket_directories='' -c listen_addresses=127.0.0.1" \
+      start >/dev/null; then
+      echo "local-postgres.sh: Postgres did not start. Last lines of $LOG_FILE:" >&2
+      tail -n 20 "$LOG_FILE" >&2 || true
+      exit 1
+    fi
   fi
 
   local admin_url="postgresql://$DB_USER:$DB_PASSWORD@127.0.0.1:$PORT/postgres?sslmode=disable"

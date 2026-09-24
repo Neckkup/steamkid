@@ -121,6 +121,13 @@ that definition is a release we could not defend.
 - The binaries are materialised by a postinstall hook. npm 11 defers install
   scripts until approved, so `local-postgres.sh` runs the hydrator itself rather
   than failing with an empty `native/bin`.
+- The cluster listens on TCP only, with `unix_socket_directories` empty. A Unix
+  socket path is capped at 107 bytes by the kernel, and a Paperclip workspace
+  checkout is ~121 bytes before `/.local-postgres/.s.PGSQL.55432` is appended, so
+  putting the socket beside the data directory — which is what the first version
+  of the script did — makes Postgres refuse to start in every agent workspace.
+  `pg_ctl` reports only "could not start server. Examine the log output," naming
+  no log. Nothing in this repo dials the socket; do not add `-k` back.
 - `.env.example`'s local Postgres placeholders were **wrong before this change**
   and are corrected here: without `?sslmode=disable`,
   `src/lib/db/pg-connection.ts` demands TLS from a local server that does not
