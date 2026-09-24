@@ -46,6 +46,12 @@
  * `metadata:read` every installation holds, so it costs one extra request to
  * turn "we think auto-merge is on" into a measurement.
  *
+ * That check passing is necessary and not sufficient, which is why its PASS text
+ * changes with `enforcement_level`. Auto-merge is a queue for a *blocked* pull
+ * request; while no check is required, nothing is blocked, so `--auto` merges on
+ * the spot whatever the setting says — measured on PR #14 with `verify` still
+ * running (ADR 0008). Step 2 is what makes step 1 mean anything.
+ *
  * Exit code is 0 only when every readable condition holds, so this is safe to
  * use as the gate on closing PRO-123, and afterwards as a drift check: a
  * required check that quietly disappears reads as FAIL here.
@@ -214,7 +220,11 @@ function evaluate(branch: BranchResponse, merge: MergeSettings): Result[] {
       "Step 1 — auto-merge is allowed on the repository",
       merge.autoMergeAllowed === true,
       merge.autoMergeAllowed === true
-        ? "autoMergeAllowed=true — `gh pr merge --auto` arms a gated merge"
+        ? level === "off"
+          ? "autoMergeAllowed=true — but nothing on `main` blocks a pull request yet, so there is " +
+            "no queue for `--auto` to join and it STILL merges immediately (measured on PR #14, " +
+            "with `verify` IN_PROGRESS). This PASS means the mechanism exists, not that it gates."
+          : "autoMergeAllowed=true — `gh pr merge --auto` arms a gated merge"
         : "autoMergeAllowed=false — `gh pr merge --auto` does NOT error here, it merges " +
           "immediately with no check run. Settings -> General -> Pull Requests -> Allow auto-merge",
     ),
