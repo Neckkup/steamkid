@@ -100,8 +100,8 @@ they are never committed and never pasted into an issue comment.
 
 | Tool | Purpose | URL |
 | --- | --- | --- |
-| Vercel | deploys, preview URLs, rollback | _pending account connection_ |
-| Langfuse | AI traces, prompts, evals | _pending self-host deploy — see `docs/runbooks/langfuse-self-host.md`_ |
+| Vercel | deploys, preview URLs, rollback | team `test11-3d92`, project `steamkid-vph3` — production https://steamkid-vph3.vercel.app (PR previews are behind Vercel Deployment Protection) |
+| Langfuse | AI traces, prompts, evals | https://langfuse.homekup.com (self-hosted — see `docs/runbooks/langfuse-self-host.md`) |
 | Sentry | web app errors | https://project-qq.sentry.io/projects/steamkid/ |
 
 Update this table the moment an account exists. The team references these URLs
