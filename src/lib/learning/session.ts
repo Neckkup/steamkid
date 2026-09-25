@@ -19,7 +19,7 @@
 
 import { cookies } from "next/headers";
 
-import { uuidv7 } from "@/lib/ids";
+import { isUuidV7, uuidv7 } from "@/lib/ids";
 
 import { getLearningStore, type ConsentState } from "./store";
 
@@ -43,7 +43,6 @@ export async function getLearnerRef(): Promise<string | null> {
 export async function ensureLearnerRef(): Promise<string> {
   const store = await cookies();
   const existing = store.get(LEARNER_COOKIE)?.value;
-  if (existing) return existing;
 
   /**
    * UUIDv7, not v4 (PRO-115).
@@ -53,7 +52,13 @@ export async function ensureLearnerRef(): Promise<string> {
    * learner row, which silently made every consent, verdict and behaviour
    * lookup keyed on it resolve to "no such learner" — fail-closed, so nothing
    * broke loudly, but nothing worked either.
+   *
+   * Browsers that visited before PRO-115 hold a v4 ref. Returning it as-is
+   * causes POST /api/consent to fail the CHECK and return 500 (PRO-168).
+   * Replace any non-v7 value with a fresh v7 and reissue the cookie.
    */
+  if (existing && isUuidV7(existing)) return existing;
+
   const learnerRef = uuidv7();
   store.set(LEARNER_COOKIE, learnerRef, {
     httpOnly: true,
