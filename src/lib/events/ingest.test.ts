@@ -31,8 +31,6 @@ import { setBehaviourDb } from "./runtime";
 import { MemoryEventSink, setEventSink, type IngestContext } from "./sink";
 import { MAX_BATCH_SIZE as CLIENT_MAX_BATCH_SIZE } from "./tracker";
 
-const RECEIVED_AT = "2026-09-18T12:00:00.000Z";
-
 /**
  * A UUIDv7 whose embedded millisecond timestamp is exactly `atMs`, with a fixed
  * random tail.
@@ -43,13 +41,18 @@ const RECEIVED_AT = "2026-09-18T12:00:00.000Z";
  * payload rule runs (`ingest.ts`). Deriving the fixture's ids from `RECEIVED_AT`
  * keeps them deterministic *and* inside the validity window, so these tests go
  * on asserting what they were written to assert.
+ *
+ * RECEIVED_AT_MS is pinned to the run's wall-clock so the embedded timestamps
+ * stay within MAX_EVENT_AGE_MS (7 days) even when the integration tests call the
+ * real route handler, which uses Date.now() as received_at.
  */
 function uuidv7At(atMs: number, tail: string): string {
   const hex = Math.floor(atMs).toString(16).padStart(12, "0");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-7f80-9a1b-2c3d4e5f${tail}`;
 }
 
-const RECEIVED_AT_MS = Date.parse(RECEIVED_AT);
+const RECEIVED_AT_MS = Date.now();
+const RECEIVED_AT = new Date(RECEIVED_AT_MS).toISOString();
 const OCCURRED_AT = new Date(RECEIVED_AT_MS - 1_588).toISOString();
 
 const EVENT_ID = uuidv7At(RECEIVED_AT_MS - 1_588, "6080");
