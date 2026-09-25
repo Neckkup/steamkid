@@ -96,6 +96,45 @@ describe("checkLangfuseHardening", () => {
     expect(report.findings.every((f) => f.ok)).toBe(true);
   });
 
+  /**
+   * Langfuse 4.37 (live on 2026-09-25): the signup route validates the body
+   * before it checks AUTH_DISABLE_SIGNUP, so an empty body is a ZodError either
+   * way. The sign-in page's server-rendered flag is what tells the two apart.
+   */
+  const V437_SIGNUP = () =>
+    json({ message: { name: "ZodError", message: "expected string, received undefined" } }, 422);
+  const signInPage = (disabled: boolean) => () =>
+    new Response(`<script id="__NEXT_DATA__">{"props":{"signUpDisabled":${disabled}}}</script>`, {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+
+  it("passes a 4.37 instance whose sign-in page reports signup disabled", async () => {
+    const report = await checkLangfuseHardening({
+      baseUrl: "https://langfuse.homekup.com",
+      fetchImpl: router({
+        ...HARDENED_INSTANCE,
+        "/api/auth/signup": V437_SIGNUP,
+        "/auth/sign-in": signInPage(true),
+      }),
+    });
+
+    expect(report.findings.find((f) => f.id === "open_signup")?.ok).toBe(true);
+  });
+
+  it("fails a 4.37 instance whose sign-in page reports signup enabled", async () => {
+    const report = await checkLangfuseHardening({
+      baseUrl: "https://langfuse.homekup.com",
+      fetchImpl: router({
+        ...HARDENED_INSTANCE,
+        "/api/auth/signup": V437_SIGNUP,
+        "/auth/sign-in": signInPage(false),
+      }),
+    });
+
+    expect(report.findings.find((f) => f.id === "open_signup")?.ok).toBe(false);
+  });
+
   it("treats a signup route that is not served at all as a pass", async () => {
     const report = await checkLangfuseHardening({
       baseUrl: "https://langfuse.homekup.com",

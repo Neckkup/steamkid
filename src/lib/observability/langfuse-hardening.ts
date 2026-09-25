@@ -193,9 +193,14 @@ async function checkCanonicalUrlTls(
  * them and the traces is whether they can also get into an org.
  *
  * Probed by POSTing an empty body: the request is rejected either way, creates
- * nothing, and the *shape* of the rejection is the signal. A hardened instance
- * refuses on policy before it ever validates the body; an open one falls
- * through to schema validation and complains about the missing fields.
+ * nothing, and the *shape* of the rejection is the signal. Some versions refuse
+ * on policy before they validate the body, and that refusal is a pass on its own.
+ *
+ * Langfuse 4.37 validates the body *first*, so an empty body gets a ZodError
+ * whether or not signup is disabled (PRO-162). For that case we read the
+ * `signUpDisabled` prop the server renders into `/auth/sign-in` — it is computed
+ * from `AUTH_DISABLE_SIGNUP` in the running process. We never send a
+ * schema-valid body: on an open instance that would create an account.
  */
 async function checkOpenSignup(
   baseUrl: string,
@@ -242,6 +247,19 @@ async function checkOpenSignup(
     };
   }
 
+  const pageFlag = await readSignUpDisabledFlag(baseUrl, fetchImpl, timeoutMs);
+  if (pageFlag === true) {
+    return {
+      id: "open_signup",
+      ok: true,
+      severity: "blocker",
+      reason:
+        "The server renders signUpDisabled=true on /auth/sign-in (AUTH_DISABLE_SIGNUP " +
+        "is set); the signup route validates the body before it checks that policy.",
+      remedy: "None needed.",
+    };
+  }
+
   return {
     id: "open_signup",
     ok: false,
@@ -256,6 +274,24 @@ async function checkOpenSignup(
       "after the team's own accounts exist. Then audit the existing user list for " +
       "accounts nobody on the team recognises.",
   };
+}
+
+/** `signUpDisabled` as server-rendered into the sign-in page, or null if absent. */
+async function readSignUpDisabledFlag(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
+): Promise<boolean | null> {
+  try {
+    const response = await fetchImpl(`${baseUrl}/auth/sign-in`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) return null;
+    const match = /"signUpDisabled":(true|false)/.exec(await response.text());
+    return match ? match[1] === "true" : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
