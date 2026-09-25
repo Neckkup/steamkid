@@ -521,4 +521,29 @@ describe("consent as a write-time constraint", () => {
     );
     expect(rows[0]?.count).toBe("0");
   });
+
+  /**
+   * PRO-174: POST /api/consent writes to app.learner_consent_cache only (no
+   * guardian account in the pre-auth flow). app.consent_current must include
+   * cache rows or app.has_consent() returns false for every learner, silently
+   * refusing all verdicts and behaviour events.
+   */
+  it("stores a verdict when consent comes from the cache (pre-auth POST /api/consent flow)", async () => {
+    const cacheLearnerId = uuidv7();
+    await db.query(`INSERT INTO app.learner (id, public_ref, grade_band) VALUES ($1, $2, 'p5')`, [
+      cacheLearnerId,
+      uuidv7(),
+    ]);
+    // Simulate POST /api/consent: writes only to learner_consent_cache, no guardian account yet.
+    await db.query(
+      `INSERT INTO app.learner_consent_cache (learner_id, policy_version, scopes, granted_at)
+       VALUES ($1, 'v1', ARRAY['ai_grading', 'service_operation'], now())`,
+      [cacheLearnerId],
+    );
+
+    const stored = await store.save({ ...saveInput(gradedVerdict()), learnerId: cacheLearnerId });
+
+    expect(stored.status).toBe("graded");
+    expect(stored.learnerId).toBe(cacheLearnerId);
+  });
 });
