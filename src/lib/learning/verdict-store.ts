@@ -600,7 +600,7 @@ export class SqlVerdictStore implements VerdictStore {
               reason_code, note, created_at
        FROM app.teacher_correction
        WHERE ai_verdict_id = $1::uuid
-       ORDER BY created_at ASC, id ASC`,
+       ORDER BY seq ASC`,
       [verdictId],
     );
 
