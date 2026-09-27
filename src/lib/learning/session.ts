@@ -26,6 +26,7 @@ import { auth } from "@/auth";
 import { getBehaviourDb } from "@/lib/events/runtime";
 import { isUuidV7, uuidv7 } from "@/lib/ids";
 import { CONSENT_POLICY_VERSION } from "@/lib/learning/consent";
+import { env } from "@/lib/env";
 
 import { getLearningStore, type ConsentState } from "./store";
 
@@ -110,13 +111,14 @@ export async function getLearnerRef(): Promise<string | null> {
   const db = getBehaviourDb();
   const session = await auth().catch(() => null);
 
-  // No session: in production return null; in local/preview allow the cookie
-  // through for backward-compat local dev.
+  // No session: in production every request must be authenticated; in
+  // local/preview allow the cookie through for backward-compat local dev.
   if (!session) {
-    if (!db) return cookieValue;
-    return null;
+    if (env.APP_ENV === "production") return null;
+    return cookieValue;
   }
 
+  // No DB to validate guardian_link against: local/preview fallback.
   if (!db) return cookieValue;
 
   // Check if learner is already linked to this user.
