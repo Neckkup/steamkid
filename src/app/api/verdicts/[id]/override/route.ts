@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { RUBRIC_LEVELS } from "@/lib/learning/rubric";
-import { getTeacherIdentity } from "@/lib/learning/teacher-session";
+import { requireTeacher } from "@/lib/learning/teacher-session";
 import { resolveVerdictStore } from "@/lib/learning/verdict-runtime";
 import { OverrideRejected, type CorrectionReasonCode } from "@/lib/learning/verdict-store";
 
@@ -54,13 +54,8 @@ export async function POST(
     return NextResponse.json({ error: "invalid_verdict_id" }, { status: 400 });
   }
 
-  const teacher = await getTeacherIdentity();
-  if (teacher.kind === "unavailable") {
-    // No teacher sign-in in this tier, so there is no such thing as an
-    // authorised caller. 404 rather than 401: the route does not exist here.
-    return NextResponse.json({ error: "not_found" }, { status: 404 });
-  }
-  if (teacher.kind === "anonymous") {
+  const teacher = await requireTeacher();
+  if (!teacher) {
     return NextResponse.json({ error: "teacher_required" }, { status: 401 });
   }
 
@@ -129,11 +124,8 @@ export async function GET(
     return NextResponse.json({ error: "invalid_verdict_id" }, { status: 400 });
   }
 
-  const teacher = await getTeacherIdentity();
-  if (teacher.kind === "unavailable") {
-    return NextResponse.json({ error: "not_found" }, { status: 404 });
-  }
-  if (teacher.kind === "anonymous") {
+  const teacher = await requireTeacher();
+  if (!teacher) {
     return NextResponse.json({ error: "teacher_required" }, { status: 401 });
   }
 

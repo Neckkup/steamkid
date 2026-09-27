@@ -32,6 +32,9 @@ vi.mock("next/headers", () => ({
   }),
 }));
 
+// session.ts imports @/auth; stub it so next-auth doesn't load in this test.
+vi.mock("@/auth", () => ({ auth: async () => null }));
+
 /** `after()` needs a request context this test does not have. */
 vi.mock("next/server", async () => {
   const actual = await vi.importActual<typeof import("next/server")>("next/server");

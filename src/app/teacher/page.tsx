@@ -77,7 +77,7 @@ function LearnerRow({ entry }: { readonly entry: ClassroomEntry }) {
 }
 
 export default async function TeacherClassPage() {
-  assertTeacherSurfaceAllowed();
+  await assertTeacherSurfaceAllowed();
 
   const source = await resolveGrowthSource();
   const demo = isDemoDatabase();

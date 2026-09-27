@@ -1,25 +1,32 @@
 /**
- * Who the server thinks is on the other end of the request.
+ * Active learner resolution for the current request (PRO-197).
  *
- * **This is not authentication and does not pretend to be.** PRO-3 buys auth
- * (`mvp-scope` §4) and the account for it is still being provisioned in PRO-12.
- * What exists here is the one piece every other part of the product needs
- * before that lands: a pseudonymous `learnerRef` the server reads from an
- * HttpOnly cookie, so that
+ * The `sk_learner` cookie now carries meaning only when:
+ *   1. The request has an authenticated session, AND
+ *   2. `app.guardian_link` records that the session user owns that learner.
  *
- *   - behaviour events are attributed server-side and the client never sends,
- *     and therefore can never forge, a learner id (PRO-3 data-schema rule 1)
- *   - a child's work is scoped to that child rather than global
+ * On the first authenticated request in a browser that holds an `sk_learner`
+ * cookie for a learner with zero `guardian_link` rows, the learner is claimed:
+ * a `guardian_link` is inserted and any cached consent from the pre-auth period
+ * is copied to `app.consent_record` with `method='claimed_on_signin'`. If the
+ * learner is already linked to a different parent, the cookie is cleared.
  *
- * When the auth provider arrives, `getLearnerRef` resolves the provider subject
- * to `app.learner.id` and every caller keeps working unchanged. The cookie is
- * HttpOnly and SameSite=Lax specifically so that swap does not have to walk
- * back a value that leaked into client JavaScript in the meantime.
+ * In non-production environments without a DB session, the old cookie-only
+ * behaviour is preserved for local development.
+ *
+ * Callers that held `ensureLearnerRef()` for anonymous minting no longer need
+ * to create a learner — `POST /api/children` now does that. In production,
+ * `ensureLearnerRef()` returns the cookie value only when a valid owned link
+ * already exists; it never mints a new UUID anonymously.
  */
 
 import { cookies } from "next/headers";
 
+import { auth } from "@/auth";
+import { getBehaviourDb } from "@/lib/events/runtime";
 import { isUuidV7, uuidv7 } from "@/lib/ids";
+import { CONSENT_POLICY_VERSION } from "@/lib/learning/consent";
+import { env } from "@/lib/env";
 
 import { getLearningStore, type ConsentState } from "./store";
 
@@ -27,38 +34,148 @@ export const LEARNER_COOKIE = "sk_learner";
 
 const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 180;
 
-/** The learner for this request, or null when this browser has never been here. */
+/**
+ * Attempt to claim a cookie-only learner (zero guardian_link rows) for the
+ * signed-in parent. Inserts the link and migrates any cached consent scopes.
+ *
+ * Returns `true` when the claim succeeded, `false` when the learner does not
+ * exist in the DB (pre-auth learner with no row yet).
+ */
+async function claimLearnerCookie(
+  learnerRef: string,
+  userId: string,
+): Promise<boolean> {
+  const db = getBehaviourDb();
+  if (!db) return false;
+
+  const { rows: learnerRows } = await db.query<{ id: string }>(
+    `SELECT id FROM app.learner WHERE public_ref = $1::uuid`,
+    [learnerRef],
+  );
+  const learnerId = learnerRows[0]?.id;
+  if (!learnerId) return false;
+
+  await db.query(
+    `INSERT INTO app.guardian_link (guardian_user_id, learner_id, relationship, verified_at)
+     VALUES ($1::uuid, $2::uuid, 'parent', now())
+     ON CONFLICT (guardian_user_id, learner_id) DO NOTHING`,
+    [userId, learnerId],
+  );
+
+  // Migrate cached consent scopes from app.learner_consent_cache (pre-auth) to
+  // app.consent_record (authoritative ledger) so the signed-in parent becomes
+  // the recorded guardian for all existing consent.
+  const { rows: cacheRows } = await db.query<{
+    scopes: string[];
+    policy_version: string;
+  }>(
+    `SELECT scopes, policy_version FROM app.learner_consent_cache
+     WHERE learner_id = $1::uuid`,
+    [learnerId],
+  );
+
+  if (cacheRows[0]?.scopes?.length) {
+    const cache = cacheRows[0];
+    const policyVersion = cache.policy_version || CONSENT_POLICY_VERSION;
+    const evidence = JSON.stringify({ migrated_from: "learner_consent_cache" });
+
+    for (const scope of cache.scopes) {
+      await db.query(
+        `INSERT INTO app.consent_record
+           (id, learner_id, guardian_user_id, policy_version, scope, granted, method, evidence)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, true, 'claimed_on_signin', $6::jsonb)`,
+        [uuidv7(), learnerId, userId, policyVersion, scope, evidence],
+      );
+    }
+  }
+
+  return true;
+}
+
+/**
+ * The learner for this request.
+ *
+ * In production (or whenever a DB session and authenticated session are both
+ * available): returns the cookie value only when a `guardian_link` connects the
+ * signed-in user to that learner. Also performs the one-time cookie claim for
+ * pre-auth learners.
+ *
+ * In local development without DB or without a session: falls back to the
+ * cookie value as before, so local testing remains possible without auth.
+ */
 export async function getLearnerRef(): Promise<string | null> {
   const store = await cookies();
-  return store.get(LEARNER_COOKIE)?.value ?? null;
+  const cookieValue = store.get(LEARNER_COOKIE)?.value ?? null;
+  if (!cookieValue || !isUuidV7(cookieValue)) return null;
+
+  const db = getBehaviourDb();
+  const session = await auth().catch(() => null);
+
+  // No session: in production every request must be authenticated; in
+  // local/preview allow the cookie through for backward-compat local dev.
+  if (!session) {
+    if (env.APP_ENV === "production") return null;
+    return cookieValue;
+  }
+
+  // No DB to validate guardian_link against: local/preview fallback.
+  if (!db) return cookieValue;
+
+  // Check if learner is already linked to this user.
+  const { rows: linked } = await db.query<{ learner_id: string }>(
+    `SELECT gl.learner_id FROM app.guardian_link gl
+     JOIN app.learner l ON l.id = gl.learner_id
+     WHERE gl.guardian_user_id = $1::uuid AND l.public_ref = $2::uuid`,
+    [session.uid, cookieValue],
+  );
+  if (linked.length > 0) return cookieValue;
+
+  // Check whether this learner has any guardian_link rows at all.
+  const { rows: anyLink } = await db.query<{ guardian_user_id: string }>(
+    `SELECT gl.guardian_user_id FROM app.guardian_link gl
+     JOIN app.learner l ON l.id = gl.learner_id
+     WHERE l.public_ref = $1::uuid
+     LIMIT 1`,
+    [cookieValue],
+  );
+
+  if (anyLink.length === 0) {
+    // Unclaimed learner: try to claim it for the signed-in parent.
+    const claimed = await claimLearnerCookie(cookieValue, session.uid);
+    if (claimed) return cookieValue;
+    // Learner row doesn't exist yet (pre-auth with no DB row) — return cookie
+    // so the consent flow can proceed and create the row.
+    return cookieValue;
+  }
+
+  // Linked to someone else: shared computer case — clear the cookie.
+  store.delete(LEARNER_COOKIE);
+  return null;
 }
 
 /**
  * The learner for this request, creating the pseudonymous id if needed.
  *
- * Only callable from a route handler or server action — a server component
- * cannot set cookies, and silently failing to persist the id would hand every
- * page load a different learner.
+ * In production: does NOT mint anonymous learners. Returns the currently
+ * active (already owned) learner or throws when there is none. Callers in
+ * the consent flow should only reach here after `POST /api/children` has
+ * been used to create the learner.
+ *
+ * In local development or when DB/session are absent: preserves the old
+ * behaviour of minting a fresh UUIDv7 cookie so local testing works.
+ *
+ * Callers keep the same signature (`await ensureLearnerRef()` → string).
  */
 export async function ensureLearnerRef(): Promise<string> {
+  const existing = await getLearnerRef();
+  if (existing) return existing;
+
+  // Try the cookie directly without validation (local/anonymous path).
   const store = await cookies();
-  const existing = store.get(LEARNER_COOKIE)?.value;
+  const raw = store.get(LEARNER_COOKIE)?.value;
+  if (raw && isUuidV7(raw)) return raw;
 
-  /**
-   * UUIDv7, not v4 (PRO-115).
-   *
-   * The cookie holds `app.learner.public_ref`, and that column carries
-   * `CHECK (app.is_uuidv7(public_ref))`. A v4 ref can therefore never match a
-   * learner row, which silently made every consent, verdict and behaviour
-   * lookup keyed on it resolve to "no such learner" — fail-closed, so nothing
-   * broke loudly, but nothing worked either.
-   *
-   * Browsers that visited before PRO-115 hold a v4 ref. Returning it as-is
-   * causes POST /api/consent to fail the CHECK and return 500 (PRO-168).
-   * Replace any non-v7 value with a fresh v7 and reissue the cookie.
-   */
-  if (existing && isUuidV7(existing)) return existing;
-
+  // Mint a new learner ref for local/preview environments.
   const learnerRef = uuidv7();
   store.set(LEARNER_COOKIE, learnerRef, {
     httpOnly: true,

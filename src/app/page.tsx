@@ -1,17 +1,22 @@
 import { getCourse } from "@/content";
 import { ButtonLink, Card, PageShell } from "@/components/ui";
 import { getConsentState } from "@/lib/learning/session";
+import { auth } from "@/auth";
 
 /**
  * The front door.
  *
- * It has exactly one primary action, and which one depends on whether a
- * guardian has been through the consent screen yet — a child who lands here
- * with consent already recorded should not be asked to read an adult's page
- * again before they can learn anything.
+ * Primary action depends on auth + consent state:
+ *   - Not signed in → sign in (parent must authenticate first)
+ *   - Signed in, consent recorded → start learning
+ *   - Signed in, no consent → sign in (routes to child picker → consent)
  */
 export default async function HomePage() {
-  const [course, consent] = await Promise.all([getCourse(), getConsentState()]);
+  const [course, consent, session] = await Promise.all([
+    getCourse(),
+    getConsentState(),
+    auth().catch(() => null),
+  ]);
   const ready = consent !== null;
 
   return (
@@ -31,7 +36,7 @@ export default async function HomePage() {
           {ready ? (
             <ButtonLink href="/learn">เริ่มเรียนเลย</ButtonLink>
           ) : (
-            <ButtonLink href="/consent">เริ่มต้นใช้งาน</ButtonLink>
+            <ButtonLink href="/signin">เริ่มต้นใช้งาน</ButtonLink>
           )}
         </div>
         {ready ? (
@@ -41,11 +46,11 @@ export default async function HomePage() {
             </ButtonLink>
           </div>
         ) : null}
-        {ready ? null : (
+        {!session ? (
           <p className="mt-3 text-base text-muted">
-            ขั้นแรกให้ผู้ปกครองอ่านและยินยอมก่อนนะ ใช้เวลาไม่ถึงหนึ่งนาที
+            ผู้ปกครองเข้าสู่ระบบ Google ก่อน แล้วสร้างโปรไฟล์ให้ลูก ใช้เวลาไม่ถึงหนึ่งนาที
           </p>
-        )}
+        ) : null}
       </section>
 
       <Card className="mt-10">

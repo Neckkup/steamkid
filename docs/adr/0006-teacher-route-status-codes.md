@@ -1,9 +1,15 @@
 # 0006 — Teacher routes: a real 404 in production, a soft 404 everywhere else
 
-- Status: accepted
+- Status: superseded by [ADR 0010](0010-google-sign-in.md)
 - Date: 2026-09-23
 - Decider: CTO
 - Issue: PRO-99 (follows PRO-98)
+
+> **Superseded (2026-09-27, PRO-197).** The production-only 404 rewrite in
+> `src/proxy.ts` is replaced by a session-based guard: unauthenticated requests
+> redirect to `/signin`, authenticated non-teachers get a 403. The in-page
+> `assertTeacherSurfaceAllowed()` guard remains as defence in depth. The
+> Next.js-streaming / status-code analysis below is still accurate.
 
 ## Context
 

@@ -161,7 +161,7 @@ export default async function TeacherVerdictReviewPage({
 }: {
   readonly params: Promise<{ verdictId: string }>;
 }) {
-  assertTeacherSurfaceAllowed();
+  await assertTeacherSurfaceAllowed();
 
   const { verdictId } = await params;
   // A mistyped id must never reach Postgres. `app.ai_verdict.id` is `uuid` with

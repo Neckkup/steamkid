@@ -1,24 +1,30 @@
 /**
- * The production teacher guard answers 404, and keeps answering it.
+ * Teacher-surface guard — proxy shape and routing coverage.
  *
- * `src/proxy.ts` hides `/teacher/*` on the production tier by rewriting to a
- * path no route serves, which is what makes Next.js answer with a real 404
- * instead of the 200-with-a-"not found"-body the in-page `notFound()` is stuck
- * with (PRO-99). That trick has exactly one silent failure mode: the day
- * somebody adds a `page.tsx` that matches the rewrite target, the production
- * guard quietly starts serving 200 again and nothing else in the repo notices.
+ * The proxy now uses session-based auth (PRO-197) rather than the production-
+ * only 404 rewrite (ADR 0006, superseded by ADR 0010). These tests verify:
  *
- * So assert the target stays unroutable, and assert the matcher still covers
- * the subtree it is supposed to cover.
+ * 1. The matcher still covers every teacher route.
+ * 2. The proxy redirects unsigned-in visitors to /signin.
+ * 3. The proxy rewrites non-teachers to /forbidden (status 403).
+ * 4. The proxy passes through for teachers.
  */
 
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { NextRequest, NextResponse } from "next/server";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { HIDDEN_TEACHER_REWRITE_TARGET, config } from "./proxy";
+import { config, proxy } from "./proxy";
+
+// Controllable session for the auth behaviour tests.
+let authSession: { uid: string; role: string } | null = null;
+
+vi.mock("@/auth", () => ({
+  auth: vi.fn().mockImplementation(async () => authSession),
+}));
 
 const APP = join(fileURLToPath(new URL(".", import.meta.url)), "app");
 
@@ -30,7 +36,6 @@ function walk(dir: string): string[] {
   });
 }
 
-/** `src/app/teacher/review/page.tsx` → `["teacher", "review"]`. */
 function routePatterns(): string[][] {
   return walk(APP)
     .filter((path) => /[/\\](page|route)\.tsx?$/.test(path))
@@ -43,37 +48,52 @@ function routePatterns(): string[][] {
     );
 }
 
-function matches(target: readonly string[], pattern: readonly string[]): boolean {
-  const catchAll = pattern.findIndex((segment) => segment.startsWith("[..."));
-  if (catchAll >= 0) return target.length >= catchAll;
-  if (target.length !== pattern.length) return false;
-  return pattern.every((segment, index) => segment.startsWith("[") || segment === target[index]);
+function makeRequest(path: string) {
+  return new NextRequest(`https://steamkid.test${path}`);
 }
 
-describe("production teacher guard", () => {
+afterEach(() => {
+  authSession = null;
+  vi.clearAllMocks();
+});
+
+describe("teacher proxy — matcher coverage", () => {
   const patterns = routePatterns();
 
   it("reads the app's routes", () => {
     expect(patterns.length).toBeGreaterThan(3);
   });
 
-  it("rewrites to a path no route serves, so Next.js answers 404", () => {
-    const segments = HIDDEN_TEACHER_REWRITE_TARGET.split("/").filter((s) => s !== "");
-    const hit = patterns.find((pattern) => matches(segments, pattern));
-
-    expect(
-      hit,
-      `${HIDDEN_TEACHER_REWRITE_TARGET} is now served by app/${hit?.join("/")}/page.tsx — the ` +
-        `production guard would answer 200. Rename the target or move that route.`,
-    ).toBeUndefined();
-  });
-
   it("matches every teacher route, not just the ones that exist today", () => {
     expect(config.matcher).toContain("/teacher");
     expect(config.matcher).toContain("/teacher/:path*");
 
-    // Every teacher page must fall inside the matcher above.
     const teacherRoutes = patterns.filter((pattern) => pattern[0] === "teacher");
     expect(teacherRoutes.length).toBeGreaterThan(0);
+  });
+});
+
+describe("teacher proxy — auth behaviour", () => {
+  it("redirects an unauthenticated visitor to /signin", async () => {
+    authSession = null;
+    const response = await proxy(makeRequest("/teacher/review"));
+    expect(response).toBeInstanceOf(NextResponse);
+    expect(response?.status).toBe(307);
+    const location = response?.headers.get("location") ?? "";
+    expect(location).toContain("/signin");
+    expect(location).toContain("callbackUrl");
+  });
+
+  it("rewrites a non-teacher to /forbidden with status 403", async () => {
+    authSession = { uid: "uid-1", role: "guardian" };
+    const response = await proxy(makeRequest("/teacher/review"));
+    expect(response?.status).toBe(403);
+  });
+
+  it("passes through for a teacher", async () => {
+    authSession = { uid: "uid-1", role: "teacher" };
+    const response = await proxy(makeRequest("/teacher/review"));
+    // NextResponse.next() has status 200
+    expect(response?.status).toBe(200);
   });
 });
