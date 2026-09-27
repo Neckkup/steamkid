@@ -23,6 +23,9 @@ import { ButtonLink, Card, PageShell, StatusPill } from "@/components/ui";
 import { getLessonById, getNextLesson } from "@/content";
 import { getConsentState, getLearnerRef } from "@/lib/learning/session";
 import { getLearningStore } from "@/lib/learning/store";
+import { resolveVerdictStore } from "@/lib/learning/verdict-runtime";
+
+import { FeedbackPanel } from "./feedback-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -48,6 +51,15 @@ export default async function ResultPage({
   const lesson = await getLessonById(submission.lessonId);
   const nextLesson = lesson ? await getNextLesson(lesson.slug) : undefined;
   const latest = submission.drafts[submission.drafts.length - 1];
+
+  // Fetch AI verdict for this submission. `latestForSubject` does not scope to
+  // a learner, but the submission was already authenticated above — if the
+  // learner does not own this submission, `getSubmission` returned null and we
+  // called `notFound()`. This fetch is therefore safe.
+  const verdictStore = resolveVerdictStore();
+  const verdict = verdictStore
+    ? await verdictStore.latestForSubject("submission", submissionId)
+    : null;
 
   // Reached by URL rather than by submitting: the work is saved but the child
   // never pressed send. Saying "ส่งเรียบร้อย" here would be a lie.
@@ -93,20 +105,32 @@ export default async function ResultPage({
         </p>
       </Card>
 
-      {/*
-        The honest part. The child is told there is no feedback today, why, and
-        that nothing about that is their fault — not left to wonder why the page
-        has no score on it.
-      */}
-      <Card className="mt-6 border-waiting bg-waiting-soft">
-        <StatusPill tone="waiting">รอครู AI อ่าน</StatusPill>
-        <h2 className="mt-3 text-2xl font-bold leading-snug">แล้วจะรู้ผลตอนไหน?</h2>
-        <p className="mt-2 text-lg">
-          งานเขียนแบบนี้ต้องให้ครู AI อ่านแล้วเขียนคำแนะนำกลับมา ตอนนี้ระบบตรวจยังทำไม่เสร็จ
-          หนูจึงยังไม่ได้คำแนะนำในวันนี้ ไม่ใช่เพราะงานของหนูนะ
-        </p>
-        <p className="mt-2 text-lg">พอครู AI อ่านงานได้เมื่อไหร่ คำแนะนำจะมาอยู่ที่หน้านี้</p>
-      </Card>
+      {verdict ? (
+        <FeedbackPanel
+          verdictId={verdict.verdictId}
+          status={verdict.status}
+          subjectType="submission"
+          subjectId={submissionId}
+          correlationId={verdict.correlationId}
+          feedbackToLearner={verdict.feedbackToLearner}
+          nextStep={verdict.nextStep}
+          unscorableReason={verdict.unscorableReason}
+        />
+      ) : (
+        /*
+          The honest part. The child is told there is no feedback today, why, and
+          that nothing about that is their fault — not left to wonder why the page
+          has no score on it.
+        */
+        <Card className="mt-6 border-waiting bg-waiting-soft">
+          <StatusPill tone="waiting">รอครู AI อ่าน</StatusPill>
+          <h2 className="mt-3 text-2xl font-bold leading-snug">แล้วจะรู้ผลตอนไหน?</h2>
+          <p className="mt-2 text-lg">
+            งานเขียนแบบนี้ต้องให้ครู AI อ่านแล้วเขียนคำแนะนำกลับมา พอครู AI อ่านงานได้แล้ว
+            คำแนะนำจะมาอยู่ที่หน้านี้เอง ไม่ต้องทำอะไรเพิ่ม
+          </p>
+        </Card>
+      )}
 
       <Card className="mt-6">
         <h2 className="text-2xl font-bold leading-snug">งานที่หนูส่ง</h2>
