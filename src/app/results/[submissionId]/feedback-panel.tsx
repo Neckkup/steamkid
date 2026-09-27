@@ -43,12 +43,16 @@ export function FeedbackPanel({
   unscorableReason,
 }: FeedbackPanelProps) {
   const { track, clock } = useTracking();
-  const mountedAt = useRef(Date.now());
+  const mountedAt = useRef<number | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const spanRef = useRef<ActiveSpan | null>(null);
   const viewedFired = useRef(false);
   const ratedRef = useRef(false);
   const [rated, setRated] = useState<"helpful" | "not_helpful" | null>(null);
+
+  useEffect(() => {
+    mountedAt.current = Date.now();
+  }, []);
 
   useEffect(() => {
     spanRef.current = new ActiveSpan(clock, Date.now());
@@ -76,7 +80,7 @@ export function FeedbackPanel({
                   verdict_id: verdictId,
                   subject_type: subjectType,
                   subject_id: subjectId,
-                  ms_since_result_shown: Date.now() - mountedAt.current,
+                  ms_since_result_shown: mountedAt.current != null ? Date.now() - mountedAt.current : 0,
                   correlation_id: correlationId,
                 },
                 { verdict_id: verdictId, submission_id: subjectId },
