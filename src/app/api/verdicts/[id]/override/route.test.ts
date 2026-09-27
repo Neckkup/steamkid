@@ -16,23 +16,17 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { createTestDatabase, type TestDatabase } from "@/lib/db/test-database";
 import { uuidv7 } from "@/lib/ids";
 import { GRADE_VERSION, type AiVerdict } from "@/lib/learning/ai-grade";
-import { TEACHER_COOKIE } from "@/lib/learning/teacher-session";
 import { setVerdictDb } from "@/lib/learning/verdict-runtime";
 import { SqlVerdictStore } from "@/lib/learning/verdict-store";
 
 /**
- * `next/headers` needs a request scope that a direct handler call does not
- * have, so the cookie jar is stubbed. The endpoint still reads it through the
- * same `getTeacherIdentity()` the real request path uses.
+ * `requireTeacher()` is stubbed via `@/lib/learning/teacher-session`. Tests
+ * call `setTeacherStub()` to control who is authenticated for each test.
  */
-const cookieJar = new Map<string, string>();
-vi.mock("next/headers", () => ({
-  cookies: async () => ({
-    get: (name: string) => {
-      const value = cookieJar.get(name);
-      return value === undefined ? undefined : { name, value };
-    },
-  }),
+let teacherStub: { userId: string; email: string } | null = null;
+
+vi.mock("@/lib/learning/teacher-session", () => ({
+  requireTeacher: vi.fn().mockImplementation(async () => teacherStub),
 }));
 
 const { POST, GET } = await import("./route");
@@ -61,7 +55,7 @@ function get(id: string): Promise<Response> {
   });
 }
 
-async function seedTeacher(role: "teacher" | "guardian"): Promise<string> {
+async function seedUser(role: "teacher" | "guardian"): Promise<string> {
   const id = uuidv7();
   await db.query(
     `INSERT INTO identity.user_account (id, role, email, auth_provider, auth_subject_id)
@@ -110,19 +104,15 @@ beforeAll(async () => {
   db = await createTestDatabase();
   store = new SqlVerdictStore(db);
   setVerdictDb(db);
-  // The endpoint refuses outright in the production tier (no teacher sign-in
-  // exists yet); these tests are about the local and preview behaviour.
-  vi.stubEnv("APP_ENV", "local");
 }, 120_000);
 
 afterAll(async () => {
   setVerdictDb(null);
-  vi.unstubAllEnvs();
   await db.close();
 });
 
 beforeEach(async () => {
-  cookieJar.clear();
+  teacherStub = null;
   learnerId = uuidv7();
   const subjectId = uuidv7();
   const itemId = uuidv7();
@@ -131,11 +121,9 @@ beforeEach(async () => {
     learnerId,
     uuidv7(),
   ]);
-  teacherId = await seedTeacher("teacher");
-  guardianId = await seedTeacher("guardian");
+  teacherId = await seedUser("teacher");
+  guardianId = await seedUser("guardian");
 
-  // A verdict is only storable for a learner whose guardian said yes to AI
-  // grading — the store enforces it, so the fixture has to say it out loud.
   await db.query(
     `INSERT INTO app.consent_record
        (id, learner_id, guardian_user_id, policy_version, scope, granted, method, evidence)
@@ -158,7 +146,7 @@ beforeEach(async () => {
 
 describe("a teacher correcting one skill", () => {
   it("appends a correction and answers with the score a child would now see", async () => {
-    cookieJar.set(TEACHER_COOKIE, teacherId);
+    teacherStub = { userId: teacherId, email: "teacher@example.test" };
 
     const response = await post(verdictId, {
       skillCode: "SCI.HYPOTHESIS",
@@ -179,14 +167,12 @@ describe("a teacher correcting one skill", () => {
     expect(body.verdict.normalizedScore).toBeCloseTo(1, 10);
     expect(body.verdict.result).toBe("correct");
 
-    // A row, not an edit.
     const { rows } = await db.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM app.teacher_correction WHERE ai_verdict_id = $1`,
       [verdictId],
     );
     expect(rows[0]?.count).toBe("1");
 
-    // And the AI's own level is still there to compare against.
     const ai = await db.query<{ level: number }>(
       `SELECT level FROM app.ai_verdict_criterion
        WHERE verdict_id = $1 AND skill_code = 'SCI.HYPOTHESIS'`,
@@ -196,7 +182,7 @@ describe("a teacher correcting one skill", () => {
   });
 
   it("keeps every correction when a teacher corrects twice", async () => {
-    cookieJar.set(TEACHER_COOKIE, teacherId);
+    teacherStub = { userId: teacherId, email: "teacher@example.test" };
 
     await post(verdictId, { skillCode: "SCI.HYPOTHESIS", correctedLevel: 3, reasonCode: "too_harsh" });
     await post(verdictId, {
@@ -212,13 +198,14 @@ describe("a teacher correcting one skill", () => {
 
     expect(body.overrides.map((o) => o.correctedLevel)).toEqual([3, 1]);
     expect(body.overrides.map((o) => o.originalLevel)).toEqual([2, 2]);
-    // The latest correction is the one that counts: 0.6*1/3 + 0.4*1 = 0.6.
     expect(body.verdict.normalizedScore).toBeCloseTo(0.6, 10);
   });
 });
 
 describe("who is allowed to correct", () => {
-  it("refuses a request with no teacher behind it", async () => {
+  it("refuses a request with no authenticated teacher (401)", async () => {
+    teacherStub = null;
+
     const response = await post(verdictId, {
       skillCode: "SCI.HYPOTHESIS",
       correctedLevel: 3,
@@ -227,8 +214,11 @@ describe("who is allowed to correct", () => {
     expect(response.status).toBe(401);
   });
 
-  it("refuses a guardian account holding a teacher cookie", async () => {
-    cookieJar.set(TEACHER_COOKIE, guardianId);
+  it("refuses when the store rejects the db-level teacher check (403)", async () => {
+    // The db teacher_correction table has a role-check FK. Seed a guardian user
+    // but pass them through requireTeacher (mocked to return them) to test the
+    // store rejection path.
+    teacherStub = { userId: guardianId, email: "guardian@example.test" };
 
     const response = await post(verdictId, {
       skillCode: "SCI.HYPOTHESIS",
@@ -244,49 +234,11 @@ describe("who is allowed to correct", () => {
     );
     expect(rows[0]?.count).toBe("0");
   });
-
-  /**
-   * `env` is parsed once at module load, so this re-imports the route with
-   * `APP_ENV=production` rather than stubbing around a value that is already
-   * frozen — otherwise the test would pass against a module that never read the
-   * stub and would keep passing if the guard were deleted.
-   */
-  it("does not exist at all in the production tier", async () => {
-    cookieJar.set(TEACHER_COOKIE, teacherId);
-    vi.resetModules();
-    vi.stubEnv("APP_ENV", "production");
-    try {
-      const production = await import("./route");
-      const response = await production.POST(
-        new Request(`https://steamkid.test/api/verdicts/${verdictId}/override`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            skillCode: "SCI.HYPOTHESIS",
-            correctedLevel: 3,
-            reasonCode: "too_harsh",
-          }),
-        }),
-        { params: Promise.resolve({ id: verdictId }) },
-      );
-      expect(response.status).toBe(404);
-    } finally {
-      vi.stubEnv("APP_ENV", "local");
-      vi.resetModules();
-    }
-
-    // Nothing was written by the refused request.
-    const { rows } = await db.query<{ count: string }>(
-      `SELECT count(*)::text AS count FROM app.teacher_correction WHERE ai_verdict_id = $1`,
-      [verdictId],
-    );
-    expect(rows[0]?.count).toBe("0");
-  });
 });
 
 describe("requests that cannot be honoured", () => {
   it("rejects a level outside the rubric's 0-3", async () => {
-    cookieJar.set(TEACHER_COOKIE, teacherId);
+    teacherStub = { userId: teacherId, email: "teacher@example.test" };
     const response = await post(verdictId, {
       skillCode: "SCI.HYPOTHESIS",
       correctedLevel: 7,
@@ -296,7 +248,7 @@ describe("requests that cannot be honoured", () => {
   });
 
   it("rejects a reason code nobody agreed to", async () => {
-    cookieJar.set(TEACHER_COOKIE, teacherId);
+    teacherStub = { userId: teacherId, email: "teacher@example.test" };
     const response = await post(verdictId, {
       skillCode: "SCI.HYPOTHESIS",
       correctedLevel: 3,
@@ -306,7 +258,7 @@ describe("requests that cannot be honoured", () => {
   });
 
   it("answers 404 for a skill this verdict was never scored on", async () => {
-    cookieJar.set(TEACHER_COOKIE, teacherId);
+    teacherStub = { userId: teacherId, email: "teacher@example.test" };
     const response = await post(verdictId, {
       skillCode: "SCI.NOT_ON_THIS_ITEM",
       correctedLevel: 3,
@@ -317,7 +269,7 @@ describe("requests that cannot be honoured", () => {
   });
 
   it("answers 404 for a verdict that does not exist", async () => {
-    cookieJar.set(TEACHER_COOKIE, teacherId);
+    teacherStub = { userId: teacherId, email: "teacher@example.test" };
     const response = await post(uuidv7(), {
       skillCode: "SCI.HYPOTHESIS",
       correctedLevel: 3,

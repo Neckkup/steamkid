@@ -129,7 +129,7 @@ export default async function TeacherLearnerPage({
 }: {
   readonly params: Promise<{ learnerRef: string }>;
 }) {
-  assertTeacherSurfaceAllowed();
+  const teacher = await assertTeacherSurfaceAllowed();
 
   const { learnerRef } = await params;
   // Same reason as the review screen (PRO-98 D2): `app.learner.public_ref` is

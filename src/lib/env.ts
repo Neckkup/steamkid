@@ -50,6 +50,25 @@ const schema = z.object({
   /** Auth.js session secret. */
   AUTH_SECRET: blankAsUndefined(z.string().min(1)),
 
+  /** Google OAuth credentials for Auth.js. */
+  AUTH_GOOGLE_ID: blankAsUndefined(z.string().min(1)),
+  AUTH_GOOGLE_SECRET: blankAsUndefined(z.string().min(1)),
+
+  /**
+   * Comma-separated list of email addresses that are allowed the `teacher` role.
+   * Compared case-insensitively. Removing an address revokes access on the next
+   * request without a DB change.
+   */
+  TEACHER_EMAILS: blankAsUndefined(z.string().min(1)),
+
+  /**
+   * Auth.js redirect proxy URL for Vercel preview deployments.
+   * Preview hosts are dynamic, so production receives the Google callback and
+   * forwards it. Set to the production /api/auth URL on preview environments only.
+   * Automatically read by Auth.js as `AUTH_REDIRECT_PROXY_URL`.
+   */
+  AUTH_REDIRECT_PROXY_URL: blankAsUndefined(z.string().url()),
+
   /**
    * Gemini API key (see `docs/adr/0004-llm-provider-gemini.md`). Server-side
    * only — never expose to the browser. Must belong to a **billing-enabled**

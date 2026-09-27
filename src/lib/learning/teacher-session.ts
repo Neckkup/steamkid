@@ -1,46 +1,87 @@
 /**
- * Which teacher is on the other end of a request.
+ * Teacher authentication helper (PRO-197).
  *
- * **This is not authentication, and the production tier does not accept it.**
- * PRO-12 provisions the auth provider; until then there is nothing on a request
- * that distinguishes a teacher from a stranger who guessed a cookie, and the
- * thing being guarded here is a teacher's power to change a child's grade.
+ * A teacher is a signed-in account with `role IN ('teacher', 'admin')` whose
+ * email is also in the `TEACHER_EMAILS` allowlist at the time of the request.
+ * The allowlist is checked server-side (the JWT carries only uid + role).
+ * Removing an email from the env var revokes access on the next request.
  *
- * So the rule is the same one `src/app/teacher/guard.ts` already applies to the
- * teacher screens, and it is deliberately the blunt one: **in `production`
- * there is no teacher, and every endpoint that needs one refuses.** Local and
- * preview read the id from an HttpOnly cookie, which is enough to review the
- * screens and to run the flow end to end, and not enough to be mistaken for a
- * login.
- *
- * Two things still hold even in local and preview, because they are enforced by
- * the database rather than by this file:
- *
- *   - the id must be a real `identity.user_account` row whose `role` is
- *     `teacher` or `admin` — a composite foreign key on
- *     `(teacher_user_id, teacher_role)` rejects anything else
- *   - a correction is an append-only row that records who made it
- *
- * Delete this file the day a teacher session exists, and scope corrections to
- * that teacher's own class in the same change.
+ * The old `sk_teacher` cookie path and `getTeacherIdentity()` are deleted.
+ * All callers now use `requireTeacher()`. The proxy and every Server Function
+ * that reads child PII call this rather than relying on the proxy alone.
  */
 
-import { cookies } from "next/headers";
-
+import { auth } from "@/auth";
+import { getBehaviourDb } from "@/lib/events/runtime";
 import { env } from "@/lib/env";
+import { uuidv7 } from "@/lib/ids";
 
-export const TEACHER_COOKIE = "sk_teacher";
+export interface TeacherIdentity {
+  readonly userId: string;
+  readonly email: string;
+}
 
-export type TeacherIdentity =
-  | { readonly kind: "teacher"; readonly userId: string }
-  /** No teacher sign-in exists in this tier. Not "signed out" — unavailable. */
-  | { readonly kind: "unavailable" }
-  | { readonly kind: "anonymous" };
+function teacherEmailsFromEnv(): string[] {
+  if (!env.TEACHER_EMAILS) return [];
+  return env.TEACHER_EMAILS.split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+}
 
-export async function getTeacherIdentity(): Promise<TeacherIdentity> {
-  if (env.APP_ENV === "production") return { kind: "unavailable" };
+/**
+ * Returns the authenticated teacher identity, or null.
+ *
+ * Returns null when:
+ * - there is no session
+ * - the session role is not `teacher` or `admin`
+ * - the account email is not in the `TEACHER_EMAILS` allowlist
+ * - the database is unavailable
+ */
+export async function requireTeacher(): Promise<TeacherIdentity | null> {
+  const session = await auth().catch(() => null);
+  if (!session) return null;
+  if (!["teacher", "admin"].includes(session.role)) return null;
 
-  const store = await cookies();
-  const userId = store.get(TEACHER_COOKIE)?.value;
-  return userId ? { kind: "teacher", userId } : { kind: "anonymous" };
+  const db = getBehaviourDb();
+  if (!db) return null;
+
+  const { rows } = await db.query<{ email: string }>(
+    `SELECT email FROM identity.user_account WHERE id = $1::uuid`,
+    [session.uid],
+  );
+  const email = rows[0]?.email;
+  if (!email) return null;
+
+  if (!teacherEmailsFromEnv().includes(email.toLowerCase())) return null;
+
+  return { userId: session.uid, email };
+}
+
+/**
+ * Write a PII access record when a teacher page reads child nicknames.
+ *
+ * `learnerIds` should be the internal `app.learner.id` values, not public_refs.
+ */
+export async function logPiiAccess(
+  teacherUserId: string,
+  learnerIds: string[],
+  purpose: string,
+): Promise<void> {
+  const db = getBehaviourDb();
+  if (!db || learnerIds.length === 0) return;
+
+  const values = learnerIds
+    .map((_, i) => `($${i * 4 + 1}::uuid, $${i * 4 + 2}::uuid, 'user', $${i * 4 + 3}, now())`)
+    .join(", ");
+
+  const params: unknown[] = [];
+  for (const learnerId of learnerIds) {
+    params.push(uuidv7(), teacherUserId, learnerId, purpose);
+  }
+
+  await db.query(
+    `INSERT INTO identity.pii_access_log (id, actor_user_id, actor_kind, learner_id, purpose, accessed_at)
+     VALUES ${values}`,
+    params,
+  );
 }

@@ -69,7 +69,7 @@ async function QueueRow({ entry }: { readonly entry: ReviewQueueEntry }) {
 }
 
 export default async function TeacherReviewQueuePage() {
-  assertTeacherSurfaceAllowed();
+  await assertTeacherSurfaceAllowed();
 
   const queue = await resolveReviewQueue();
   const demo = isDemoDatabase();

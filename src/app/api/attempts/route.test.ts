@@ -30,6 +30,9 @@ vi.mock("next/headers", () => ({
   }),
 }));
 
+// session.ts imports @/auth; stub it so next-auth doesn't load in this test.
+vi.mock("@/auth", () => ({ auth: async () => null }));
+
 const { POST } = await import("./route");
 
 async function firstWrittenPracticeItem(): Promise<WrittenItem> {
