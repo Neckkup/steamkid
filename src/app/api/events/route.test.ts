@@ -40,8 +40,16 @@ const ALL_SCOPES = [
   "training_use",
 ];
 
-/** 2026-09-19 09:00 UTC. Fixed so partition boundaries are not a coin toss. */
-const T0 = Date.parse("2026-09-19T09:00:00.000Z");
+/**
+ * One hour before the test runs, floored to the nearest minute so the UUIDv7
+ * timestamps in the journey are reproducible within a single test run.
+ *
+ * Originally hardcoded to 2026-09-19 to avoid partition-boundary surprises, but
+ * `ensure_partition_runway(3)` now creates 3 months of partitions from the current
+ * date at migration time, so any recent timestamp is guaranteed a home. A static
+ * value aged out of the 7-day `implausible_event_time` window on 2026-09-26.
+ */
+const T0 = Math.floor((Date.now() - 60 * 60_000) / 60_000) * 60_000;
 
 let db: TestDatabase;
 let consenting: SeededLearner;
