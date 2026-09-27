@@ -116,14 +116,30 @@ async function main() {
     console.log(`~ ${definition.name} updated`);
   }
 
+  // Create all new widgets first, then place them after a brief pause.
+  // Langfuse 4.37 has a read-after-write inconsistency on the unstable API:
+  // a freshly created widget returns "not found" from the placement endpoint
+  // immediately, but resolves within ~5 seconds. Batching creation before
+  // placement gives every widget the same propagation window.
+  const created: { id: string; definition: WidgetDefinition }[] = [];
   for (const definition of toCreate) {
-    const created = await json<Widget>("/dashboard-widgets", {
+    const widget = await json<Widget>("/dashboard-widgets", {
       method: "POST",
       body: JSON.stringify(widgetCreateBody(definition)),
     });
+    created.push({ id: widget.id, definition });
+    console.log(`  creating ${definition.name}…`);
+  }
+
+  if (created.length > 0) {
+    // Allow the newly created widgets to become consistent before placement.
+    await new Promise((resolve) => setTimeout(resolve, 6000));
+  }
+
+  for (const { id, definition } of created) {
     await json(`/dashboards/${dashboardId}/placements`, {
       method: "POST",
-      body: JSON.stringify({ type: "widget", widgetId: created.id, ...definition.placement }),
+      body: JSON.stringify({ type: "widget", widgetId: id, ...definition.placement }),
     });
     console.log(`+ ${definition.name} created and placed`);
   }
