@@ -85,3 +85,29 @@ export async function logPiiAccess(
     params,
   );
 }
+
+/**
+ * Convenience wrapper for teacher pages that only have public_refs.
+ *
+ * Resolves each `public_ref` to its internal `app.learner.id` then delegates
+ * to `logPiiAccess`. Refs that do not resolve (e.g. demo data) are silently
+ * skipped — the log is best-effort and must not block the page render.
+ */
+export async function logPiiAccessByRefs(
+  teacherUserId: string,
+  publicRefs: string[],
+  purpose: string,
+): Promise<void> {
+  const db = getBehaviourDb();
+  if (!db || publicRefs.length === 0) return;
+
+  const { rows } = await db.query<{ id: string }>(
+    `SELECT id FROM app.learner WHERE public_ref = ANY($1::uuid[])`,
+    [publicRefs],
+  );
+
+  const learnerIds = rows.map((r) => r.id);
+  if (learnerIds.length === 0) return;
+
+  await logPiiAccess(teacherUserId, learnerIds, purpose);
+}

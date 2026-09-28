@@ -12,6 +12,7 @@
  * the child's.
  */
 
+import * as Sentry from "@sentry/nextjs";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -22,6 +23,7 @@ import { percent, presentForTeacher, type TeacherSkillRow } from "@/lib/growth/p
 import { isDemoDatabase, resolveGrowthSource } from "@/lib/growth/runtime";
 import { CONFIDENCE_DISPLAY_FLOOR, type GrowthLabel } from "@/lib/growth/types";
 import { isUuidV7 } from "@/lib/ids";
+import { logPiiAccessByRefs } from "@/lib/learning/teacher-session";
 
 import { assertTeacherSurfaceAllowed } from "../guard";
 
@@ -157,6 +159,14 @@ export default async function TeacherLearnerPage({
   const view = presentForTeacher(growth);
   const displayName = await source.getDisplayName(learnerRef, "teacher_dashboard_learner", null);
   const name = displayName ?? `นักเรียน ${learnerRef.slice(0, 8)}`;
+
+  if (displayName !== null) {
+    try {
+      await logPiiAccessByRefs(teacher.userId, [learnerRef], "teacher_dashboard_learner");
+    } catch (error) {
+      Sentry.captureException(error);
+    }
+  }
 
   return (
     <PageShell width="wide">

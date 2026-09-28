@@ -12,6 +12,7 @@
  * there is no teacher sign-in (PRO-12), so the route 404s in production.
  */
 
+import * as Sentry from "@sentry/nextjs";
 import Link from "next/link";
 
 import { DemoDataNotice, NoDataNotice } from "@/components/growth/notices";
@@ -21,6 +22,7 @@ import { isDemoDatabase } from "@/lib/growth/runtime";
 import { STATUS_COPY, waitedFor } from "@/lib/learning/review-present";
 import type { ReviewQueueEntry } from "@/lib/learning/review-queue";
 import { resolveReviewQueue } from "@/lib/learning/review-runtime";
+import { logPiiAccessByRefs } from "@/lib/learning/teacher-session";
 
 import { assertTeacherSurfaceAllowed } from "../guard";
 import { DemoTeacherSignIn } from "./demo-sign-in";
@@ -69,7 +71,7 @@ async function QueueRow({ entry }: { readonly entry: ReviewQueueEntry }) {
 }
 
 export default async function TeacherReviewQueuePage() {
-  await assertTeacherSurfaceAllowed();
+  const teacher = await assertTeacherSurfaceAllowed();
 
   const queue = await resolveReviewQueue();
   const demo = isDemoDatabase();
@@ -84,6 +86,12 @@ export default async function TeacherReviewQueuePage() {
   }
 
   const entries = await queue.list();
+  const refsWithNames = entries.filter((e) => e.learnerName !== null).map((e) => e.learnerRef);
+  try {
+    await logPiiAccessByRefs(teacher.userId, refsWithNames, "teacher_review_queue");
+  } catch (error) {
+    Sentry.captureException(error);
+  }
   const waiting = entries.filter((entry) => entry.awaitingTeacher);
   const graded = entries.filter((entry) => !entry.awaitingTeacher);
 
