@@ -102,7 +102,11 @@ describe("getLearnerRef — session present, DB present", () => {
     expect(await getLearnerRef()).toBe(ref);
   });
 
-  it("returns null when linked to a different parent (clears cookie)", async () => {
+  // D7: cookie owned by another parent. getLearnerRef must return null without
+  // mutating cookies — store.delete() throws in Server Component render context.
+  // The caller page redirects to /children where picking a child overwrites the
+  // cookie.
+  it("returns null when linked to a different parent (does not clear cookie)", async () => {
     const ref = uuidv7();
     jar.set(LEARNER_COOKIE, ref);
     authResult = { uid: uuidv7(), role: "guardian" };
@@ -111,7 +115,8 @@ describe("getLearnerRef — session present, DB present", () => {
     dbRows = [[], [{ guardian_user_id: otherId }]];
     const result = await getLearnerRef();
     expect(result).toBeNull();
-    expect(jar.has(LEARNER_COOKIE)).toBe(false);
+    // Cookie must NOT be deleted — caller page handles redirect
+    expect(jar.has(LEARNER_COOKIE)).toBe(true);
   });
 
   it("claims an unclaimed learner and returns the cookie", async () => {

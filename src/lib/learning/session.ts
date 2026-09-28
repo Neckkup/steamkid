@@ -111,15 +111,21 @@ export async function getLearnerRef(): Promise<string | null> {
   const db = getBehaviourDb();
   const session = await auth().catch(() => null);
 
-  // No session: in production every request must be authenticated; in
-  // local/preview allow the cookie through for backward-compat local dev.
+  // No session: only local development may bypass authentication.
+  // Preview runs against the same Supabase DB as production, so the preview
+  // fallback that existed before b26f11c would let an unauthenticated request
+  // read any child's data with a known cookie.
   if (!session) {
-    if (env.APP_ENV === "production") return null;
+    if (env.APP_ENV !== "local") return null;
     return cookieValue;
   }
 
-  // No DB to validate guardian_link against: local/preview fallback.
-  if (!db) return cookieValue;
+  // No DB to validate guardian_link against: local fallback only.
+  // Same reasoning as the session check: preview shares the production DB.
+  if (!db) {
+    if (env.APP_ENV !== "local") return null;
+    return cookieValue;
+  }
 
   // Check if learner is already linked to this user.
   const { rows: linked } = await db.query<{ learner_id: string }>(
@@ -148,8 +154,11 @@ export async function getLearnerRef(): Promise<string | null> {
     return cookieValue;
   }
 
-  // Linked to someone else: shared computer case — clear the cookie.
-  store.delete(LEARNER_COOKIE);
+  // Linked to someone else: shared computer case (D7).
+  // Return null without mutating cookies — `store.delete` throws "Cookies can
+  // only be modified in a Server Action or Route Handler" when called from a
+  // Server Component render. The caller page redirects to /children, where
+  // picking a new child overwrites the cookie.
   return null;
 }
 
@@ -175,7 +184,11 @@ export async function ensureLearnerRef(): Promise<string> {
   const raw = store.get(LEARNER_COOKIE)?.value;
   if (raw && isUuidV7(raw)) return raw;
 
-  // Mint a new learner ref for local/preview environments.
+  // Mint a new learner ref for local development only. Preview and production
+  // must never mint anonymous learners — a parent must go through POST /api/children.
+  if (env.APP_ENV !== "local") {
+    throw new Error("ensureLearnerRef: anonymous minting is disabled outside local development");
+  }
   const learnerRef = uuidv7();
   store.set(LEARNER_COOKIE, learnerRef, {
     httpOnly: true,

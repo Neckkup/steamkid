@@ -15,6 +15,7 @@
  *     who guesses the URL
  */
 
+import * as Sentry from "@sentry/nextjs";
 import Link from "next/link";
 
 import { DemoDataNotice, NoDataNotice } from "@/components/growth/notices";
@@ -22,6 +23,7 @@ import { ButtonLink, Card, EmptyState, PageHeading, PageShell, StatusPill } from
 import { percent } from "@/lib/growth/present";
 import { isDemoDatabase, resolveGrowthSource } from "@/lib/growth/runtime";
 import type { ClassroomEntry } from "@/lib/growth/types";
+import { logPiiAccessByRefs } from "@/lib/learning/teacher-session";
 
 import { assertTeacherSurfaceAllowed } from "./guard";
 
@@ -77,7 +79,7 @@ function LearnerRow({ entry }: { readonly entry: ClassroomEntry }) {
 }
 
 export default async function TeacherClassPage() {
-  await assertTeacherSurfaceAllowed();
+  const teacher = await assertTeacherSurfaceAllowed();
 
   const source = await resolveGrowthSource();
   const demo = isDemoDatabase();
@@ -92,6 +94,12 @@ export default async function TeacherClassPage() {
   }
 
   const roster = await source.listClassroom({ revealNames: true, actorUserId: null });
+  const refsWithNames = roster.filter((e) => e.displayName !== null).map((e) => e.learnerRef);
+  try {
+    await logPiiAccessByRefs(teacher.userId, refsWithNames, "teacher_class_list");
+  } catch (error) {
+    Sentry.captureException(error);
+  }
 
   return (
     <PageShell width="wide">

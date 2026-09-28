@@ -68,6 +68,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
            (id, role, email, auth_provider, auth_subject_id, display_name, email_verified_at)
          VALUES ($1::uuid, $2::text, $3::citext, 'google', $4, $5, now())
          ON CONFLICT (auth_provider, auth_subject_id) DO UPDATE SET
+           email               = EXCLUDED.email,
            display_name        = EXCLUDED.display_name,
            email_verified_at   = now(),
            role = CASE

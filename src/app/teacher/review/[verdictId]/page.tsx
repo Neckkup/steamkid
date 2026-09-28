@@ -22,6 +22,7 @@
  * a teacher can see what was said in their name.
  */
 
+import * as Sentry from "@sentry/nextjs";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -43,6 +44,7 @@ import {
   skillLabel,
 } from "@/lib/learning/review-present";
 import { resolveReviewQueue } from "@/lib/learning/review-runtime";
+import { logPiiAccessByRefs } from "@/lib/learning/teacher-session";
 import { resolveVerdictStore } from "@/lib/learning/verdict-runtime";
 import type { EffectiveCriterion, TeacherOverride } from "@/lib/learning/verdict-store";
 
@@ -161,7 +163,7 @@ export default async function TeacherVerdictReviewPage({
 }: {
   readonly params: Promise<{ verdictId: string }>;
 }) {
-  await assertTeacherSurfaceAllowed();
+  const teacher = await assertTeacherSurfaceAllowed();
 
   const { verdictId } = await params;
   // A mistyped id must never reach Postgres. `app.ai_verdict.id` is `uuid` with
@@ -190,6 +192,14 @@ export default async function TeacherVerdictReviewPage({
   const store = resolveVerdictStore();
   const verdict = store ? await store.getEffective(verdictId) : null;
   if (!subject || !verdict) notFound();
+
+  if (subject.learnerName !== null) {
+    try {
+      await logPiiAccessByRefs(teacher.userId, [subject.learnerRef], "teacher_review_verdict");
+    } catch (error) {
+      Sentry.captureException(error);
+    }
+  }
 
   const overrides = store ? await store.listOverrides(verdictId) : [];
   const copy = STATUS_COPY[verdict.status];
