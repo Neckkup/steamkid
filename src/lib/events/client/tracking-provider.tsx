@@ -146,13 +146,20 @@ export function TrackingProvider({
   useEffect(() => {
     const startedAt = session.startedAt;
 
-    tracker.track("session.started", {
-      device_class: deviceClass(),
-      app_version: APP_VERSION,
-      referrer_class: referrerClass(),
-      tz_offset_min: -new Date().getTimezoneOffset(),
-      client_clock_at: new Date(startedAt).toISOString(),
-    });
+    // Guard is intentional: never mint an event_id before the guardian's consent
+    // record is committed. The tracker already refuses without consent, but the
+    // explicit check makes the architectural intent clear. `consentGranted` is
+    // not in the dependency array because this effect is session-scoped (once per
+    // mount); a separate effect keeps the tracker in sync with prop changes.
+    if (consentGranted) {
+      tracker.track("session.started", {
+        device_class: deviceClass(),
+        app_version: APP_VERSION,
+        referrer_class: referrerClass(),
+        tz_offset_min: -new Date().getTimezoneOffset(),
+        client_clock_at: new Date(startedAt).toISOString(),
+      });
+    }
 
     const markInteraction = () => clock.markInteraction(Date.now());
     const interactionEvents = ["pointerdown", "keydown", "scroll", "touchstart"] as const;

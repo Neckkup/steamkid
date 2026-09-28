@@ -277,6 +277,25 @@ describe("BehaviorTracker", () => {
     expect(tracker.pendingCount).toBe(1);
   });
 
+  it("does not mint session.started before consent success — event_id timestamp must not precede consent record", () => {
+    // PRO-216: one prod row had event_time 0.64 s before its consent record because
+    // the client minted the event_id before the consent POST had committed. The fix:
+    // never call track() for session.started when consentGranted is false, so no
+    // UUIDv7 (and therefore no event_time) is generated until after consent is saved.
+    const { tracker } = makeTracker({ consentGranted: false });
+
+    const accepted = tracker.track("session.started", {
+      device_class: "mobile",
+      app_version: "0.1.0",
+      referrer_class: "direct",
+      tz_offset_min: 0,
+      client_clock_at: new Date(1_700_000_000_000).toISOString(),
+    });
+
+    expect(accepted).toBe(false);
+    expect(tracker.pendingCount).toBe(0);
+  });
+
   it("drops queued behaviour when consent is withdrawn mid-session", () => {
     const { tracker } = makeTracker();
 
